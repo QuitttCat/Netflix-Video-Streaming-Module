@@ -1,0 +1,130 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: netflix_postgres
+    environment:
+      POSTGRES_DB: netflix_streaming
+      POSTGRES_USER: netflix
+      POSTGRES_PASSWORD: netflix123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netflix -d netflix_streaming"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: netflix_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  origin:
+    build:
+      context: ./origin
+    container_name: netflix_origin
+    environment:
+      DATABASE_URL: postgresql://netflix:netflix123@postgres:5432/netflix_streaming
+      REDIS_URL: redis://redis:6379
+      VIDEO_STORAGE_PATH: /videos
+    volumes:
+      - video_data:/videos
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cdn-node-1:
+    build:
+      context: ./cdn-node-1
+    container_name: netflix_cdn_1
+    environment:
+      NODE_ID: cdn-node-1
+      NODE_NAME: edge-dhaka
+      NODE_LOCATION: dhaka
+      NODE_PORT: "3001"
+      ORIGIN_URL: http://origin:8000
+      CACHE_PATH: /cache
+    volumes:
+      - cdn1_cache:/cache
+      - video_data:/videos:ro
+    ports:
+      - "3001:3001"
+    depends_on:
+      origin:
+        condition: service_healthy
+
+  cdn-node-2:
+    build:
+      context: ./cdn-node-2
+    container_name: netflix_cdn_2
+    environment:
+      NODE_ID: cdn-node-2
+      NODE_NAME: edge-chittagong
+      NODE_LOCATION: chittagong
+      NODE_PORT: "3002"
+      ORIGIN_URL: http://origin:8000
+      CACHE_PATH: /cache
+    volumes:
+      - cdn2_cache:/cache
+      - video_data:/videos:ro
+    ports:
+      - "3002:3002"
+    depends_on:
+      origin:
+        condition: service_healthy
+
+  cdn-node-3:
+    build:
+      context: ./cdn-node-3
+    container_name: netflix_cdn_3
+    environment:
+      NODE_ID: cdn-node-3
+      NODE_NAME: edge-sylhet
+      NODE_LOCATION: sylhet
+      NODE_PORT: "3003"
+      ORIGIN_URL: http://origin:8000
+      CACHE_PATH: /cache
+    volumes:
+      - cdn3_cache:/cache
+      - video_data:/videos:ro
+    ports:
+      - "3003:3003"
+    depends_on:
+      origin:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: netflix_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - origin
+
+volumes:
+  postgres_data:
+  video_data:
+  cdn1_cache:
+  cdn2_cache:
+  cdn3_cache:

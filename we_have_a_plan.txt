@@ -1,0 +1,378 @@
+
+
+IMPLEMENTATION PLAN - Intelligent Buffering & Preloading (with CDN demo)
+Netflix Video Streaming Module | CSE 326 - Information System Design
+Group 1
+
+
+ we're building the "Intelligent Buffering & Preloading" feature from our module, and we're also
+gonna showcase how CDN works because honestly it ties in perfectly with buffering.
+
+remember -- we're NOT building all of Netflix. just this one feature, done properly,
+with a CDN concept baked in to make it impressive.
+
+
+
+ (what are we actually showing?)
+
+
+ demo: a user hits play on a video. behind the scenes our system:
+  1. picks the best "CDN node" (server) to serve the video from
+  2. starts streaming video in chunks (not the whole file at once)
+  3. intelligently buffers ahead -- downloads 30-60 seconds of future chunks
+  4. adapts quality based on how full the buffer is (not just bandwidth)
+  5. when the current episode is near the end, starts preloading next episode
+  6. audio chunks always get priority so sound never cuts out
+
+that's the whole story. now let's break it down into what we actually code.
+
+
+
+TECH STACK
+
+
+backend:    Python (FastAPI) -- fast, async, easy to write, great for APIs
+database:   PostgreSQL  -- for video metadata, CDN node info
+storage:    local filesystem (we'll simulate S3/cloud with folders)
+video:      FFmpeg -- to chop videos into chunks at different quality levels
+frontend:   basic React app with a video player (dash.js or some shit ami frontend er F o janina)
+optional (but kora uchit):   Docker -- to spin up multiple "CDN nodes" as containers
+            Redis -- for caching manifest data and CDN health metrics
+
+
+
+STEP 1: VIDEO PREPARATION (the offline/pre-processing part)
+
+
+before anything streams, we need to prepare the video files. this is what
+Netflix calls their "encoding pipeline." for us it's simpler:
+
+  a) take a sample video (maybe 10-15 mins, a free creative commons movie clip)
+
+  b) use FFmpeg to encode it into multiple quality levels:
+     - 360p  (low)    ~  400 kbps
+     - 480p  (medium) ~  800 kbps
+     - 720p  (good)   ~ 1500 kbps
+     - 1080p (best)   ~ 3000 kbps
+
+  c) segment each quality into small chunks (4-6 seconds each)
+     FFmpeg can do this directly with DASH output:
+       ffmpeg -i input.mp4 -map 0 -b:v:0 400k -s:v:0 640x360
+              -b:v:1 800k -s:v:1 854x480 -b:v:2 1500k -s:v:2 1280x720
+              -b:v:3 3000k -s:v:3 1920x1080
+              -use_timeline 1 -use_template 1
+              -adaptation_sets "id=0,streams=v id=1,streams=a"
+              -f dash output.mpd
+
+  d) this gives us:
+     - an .mpd manifest file (like a table of contents)
+     - hundreds of .m4s chunk files organized by quality
+     - separate audio chunks
+
+  we store these across our simulated CDN nodes (different folders or containers).
+
+
+
+STEP 2: SIMULATED CDN LAYER (this is the cool part for ISD)
+
+
+so Netflix has this thing called "Open Connect" -- basically they put their own
+servers inside ISP data centers worldwide. we obviously can't do that , but
+we can simulate the concept beautifully.
+
+here's what we need to build:
+
+  CDN ROUTING SERVICE (runs on our main backend):
+
+  - maintains a registry of "CDN edge nodes" (could be 3 FastAPI servers
+    running on different ports, or 3 Docker containers)
+  - each node has:
+      * a node_id
+      * a "location" (e.g., "dhaka", "chittagong", "sylhet")
+      * health status (latency, load, is it alive?)
+      * list of cached content (which video chunks it has)
+
+  - when a client wants to play a video, it first hits this routing service
+  - the routing service picks the best node based on:
+      * does that node have the content cached? (availability)
+      * which node is "closest" to the client? (we simulate this with latency)
+      * which node is least loaded? (load balancing)
+  - returns the chosen node's URL to the client
+
+  CDN EDGE NODES (each is a simple FastAPI server):
+
+  - serves video chunks via HTTP byte-range requests
+  - has a local cache (filesystem folder) of video segments
+  - if a chunk is requested but not cached locally, it fetches from the
+    "origin server" (our main server), caches it, then serves it
+    (this is called a cache miss -> fill from origin)
+  - reports health metrics back to the routing service periodically
+  - tracks cache hit/miss ratio (nice stat to show in the demo)
+
+  API ENDPOINTS:
+    POST   /api/cdn/register          -- a node registers itself on startup
+    PUT    /api/cdn/heartbeat/{node_id}  -- nodes send health pings every 5 sec
+    GET    /api/cdn/best-node?videoId=X&clientRegion=Y  -- client asks for best node
+    GET    /api/cdn/stats              -- dashboard showing cache hits, loads, etc
+
+
+
+STEP 3: MANIFEST & PLAYBACK API (the brain of streaming)
+
+
+when a user clicks play, here's the flow:
+
+  1. client calls: GET /api/playback/start?videoId=123
+
+  2. backend responds with:
+     {
+       "manifest_url": "http://cdn-node-2:3001/videos/123/manifest.mpd",
+       "cdn_node": { "id": 2, "name": "edge-dhaka", "url": "http://..." },
+       "video_metadata": {
+         "title": "Sample Movie",
+         "duration": 900,
+         "total_segments": 150,
+         "available_qualities": ["360p", "480p", "720p", "1080p"],
+         "has_next_episode": true,
+         "next_episode_id": 124
+       },
+       "buffering_config": {
+         "min_buffer_seconds": 10,
+         "max_buffer_seconds": 60,
+         "prefetch_next_episode_at_percent": 90,
+         "audio_priority": true
+       }
+     }
+
+  3. client loads the .mpd manifest and starts requesting chunks from the CDN node
+
+
+
+STEP 4: INTELLIGENT BUFFERING ENGINE (the main shit)
+
+
+ok so this is THE feature we're implementing. Netflix uses something called
+BBA (Buffer-Based Adaptation) which was published in a Stanford/Netflix paper
+in 2014. it's actually elegant and not that hard to implement.
+
+the idea: instead of measuring bandwidth to pick quality (which is noisy and
+unreliable), you look at how full your buffer is.
+
+  BUFFER ZONES (the BBA algorithm):
+
+
+  imagine the buffer can hold 60 seconds of video. divide it into 3 zones:
+
+    [0 -------- 10sec] = RESERVOIR (danger zone)
+      -> pick the LOWEST quality (360p). just survive. don't rebuffer.
+
+    [10sec ---- 45sec] = CUSHION (comfort zone)
+      -> linearly map buffer level to quality.
+         buffer at 15sec? maybe 480p.
+         buffer at 30sec? 720p.
+         buffer at 40sec? 1080p.
+
+    [45sec ---- 60sec] = UPPER RESERVOIR (chill zone)
+      -> pick the HIGHEST quality. buffer is full, life is good.
+
+  the beauty is: if network drops, buffer drains, quality drops automatically.
+  if network recovers, buffer fills back up, quality rises. no bandwidth
+  estimation needed. just watch the buffer level.
+
+  WHAT WE CODE (backend side):
+
+    - an API endpoint that the client reports buffer health to:
+      POST /api/buffering/report
+      {
+        "session_id": "abc123",
+        "video_id": 123,
+        "current_buffer_seconds": 25.4,
+        "current_quality": "720p",
+        "playhead_position": 145.2,
+        "segments_buffered": [34, 35, 36, 37, 38, 39],
+        "download_speed_kbps": 2500
+      }
+
+    - backend processes this and responds with recommendations:
+      {
+        "recommended_quality": "720p",
+        "buffer_zone": "cushion",
+        "prefetch_segments": [40, 41, 42],
+        "should_prefetch_next_episode": false,
+        "priority": "video"   // or "audio" if buffer is critically low
+      }
+
+  WHY THIS IS BACKEND AND NOT JUST CLIENT-SIDE:
+
+    in real Netflix, the ABR decision IS client-side. but we're doing it as
+    a backend service too because:
+    a) we want to TRACK buffer analytics across all sessions (ISD perspective)
+    b) the server can override client decisions (e.g., throttle during peak load)
+    c) it lets us show a nice admin dashboard with real-time buffer health
+    d) the CDN routing decisions are definitely server-side
+    e) for the presentation, having backend logic is way more impressive for an
+       ISD course than just saying "the browser handles it"
+
+
+
+STEP 5: PRELOADING LOGIC (next episode + prefetch)
+
+
+two types of preloading we implement:
+
+  A) LOOK-AHEAD SEGMENT PREFETCH:
+     - client always requests 5-10 segments ahead of current playhead
+     - backend tracks which segments are buffered and suggests next batch
+     - if buffer is healthy (cushion zone+), prefetch at current quality
+     - if buffer is in reservoir, prefetch at lowest quality just to stay alive
+
+  B) NEXT EPISODE PREFETCH:
+     - when playhead crosses 90% of current episode duration:
+       * backend checks if there's a next_episode_id
+       * starts preparing: resolves best CDN node for next episode
+       * tells client to begin downloading first 3-5 segments of next episode
+       * these go into a separate "next episode buffer"
+     - when user clicks "next episode" or auto-play kicks in, playback is instant
+
+     API:
+       GET /api/prefetch/next-episode?currentVideoId=123&sessionId=abc
+
+       response:
+       {
+         "next_video_id": 124,
+         "cdn_node_url": "http://cdn-node-1:3001",
+         "manifest_url": "http://cdn-node-1:3001/videos/124/manifest.mpd",
+         "prefetch_segments": [0, 1, 2, 3, 4],
+         "quality": "720p"
+       }
+
+  C) AUDIO PRIORITY:
+     - when buffer drops below reservoir (critical), audio chunks get
+       downloaded first
+     - idea: even if video freezes for a sec, the audio keeps playing smoothly
+     - since DASH keeps audio and video as separate streams, this is natural
+
+
+
+STEP 6: MONITORING DASHBOARD (naile jombena)
+
+
+build a simple admin dashboard that shows:
+
+  - real-time buffer level of active sessions (websocket updates)
+  - which CDN node each session is connected to
+  - cache hit/miss ratios per CDN node
+  - quality distribution across sessions (how many on 1080p vs 360p etc)
+  - rebuffer events (when buffer hit zero -- bad!)
+  - CDN node health (latency, load, status)
+  - prefetch activity (next episode preloads in progress)
+
+
+
+
+STEP 7: PUTTING IT ALL TOGETHER (the demo flow)
+
+
+here's what the final demo looks like:
+
+  1. open the app -- show a simple Netflix-like UI with a few video titles
+
+  2. click play on a video
+     -> show the CDN routing happening (which node was picked and why)
+     -> video starts playing, buffer bar starts filling up
+
+  3. open the admin dashboard side by side
+     -> show buffer level rising in real-time
+     -> show it's in "reservoir" initially, then moves to "cushion"
+     -> show quality going from 360p -> 720p -> 1080p as buffer fills
+
+  4. simulate network throttle (browser devtools or tc command)
+     -> show buffer draining
+     -> quality drops automatically (1080p -> 480p)
+     -> audio priority kicks in
+     -> show the admin dashboard reflecting all this
+
+  5. restore network
+     -> buffer recovers, quality climbs back up
+
+  6. fast forward to near end of episode
+     -> show next episode prefetch triggering
+     -> admin dashboard shows prefetch activity
+     -> episode ends, next one starts INSTANTLY (no loading spinner)
+
+  7. (bonus) kill one CDN node
+     -> show the system detecting the dead node
+     -> session gets redirected to another node
+     -> playback continues (maybe a tiny hiccup)
+
+
+
+BACKEND API SUMMARY (all endpoints in one place)
+(eida khubi rough pore dekha jabe aro)
+
+
+  CDN MANAGEMENT:
+    POST   /api/cdn/register
+    PUT    /api/cdn/heartbeat/:nodeId
+    GET    /api/cdn/best-node?videoId&clientRegion
+    GET    /api/cdn/stats
+    DELETE /api/cdn/nodes/{node_id}
+
+  PLAYBACK:
+    GET    /api/playback/start?videoId
+    POST   /api/playback/end
+    GET    /api/playback/manifest/{video_id}
+
+  BUFFERING:
+    POST   /api/buffering/report
+    GET    /api/buffering/config/{video_id}
+    GET    /api/buffering/session/{session_id}/history
+
+  PREFETCH:
+    GET    /api/prefetch/next-episode?currentVideoId&sessionId
+    POST   /api/prefetch/status
+
+  MONITORING:
+    GET    /api/monitor/sessions (active sessions)
+    GET    /api/monitor/cdn-health
+    WS     /ws/monitor (real-time websocket feed)
+
+  VIDEO MANAGEMENT (for setup):
+    POST   /api/videos/upload (upload + trigger FFmpeg encoding)
+    GET    /api/videos/{video_id}
+    GET    /api/videos/{video_id}/segments/{quality}/{segment_number}
+
+
+
+
+REFERENCES & BLOGS THAT HELPED
+
+
+  - Netflix Tech Blog: "Per-Title Encode Optimization"
+  - Netflix Tech Blog: "Optimized Shot-Based Encodes: Now Streaming"
+  - Netflix Tech Blog: "Driving Content Delivery Efficiency Through
+    Classifying Cache Misses"
+  - Stanford/Netflix SIGCOMM 2014: "A Buffer-Based Approach to Rate
+    Adaptation" (the BBA paper -- this is our main algorithm reference)
+  - APNIC Blog: "Netflix Content Distribution Through Open Connect"
+  - System Design School: "Netflix Open Connect"
+  - VdoCipher: "Netflix Tech Stack: CDN and Microservices"
+  - Netflix Tech Blog: "How Data Science Helps Power Worldwide Delivery"
+  - GitHub: shaka-project/shaka-player (Google's DASH/HLS player)
+  - GitHub: Dash-Industry-Forum/dash.js (reference DASH player)
+  - GitHub: InanisV/A-Video-Streaming-System-With-Dash.js-based-on-BBA-rule
+    (someone actually implemented BBA on dash.js -- gold mine)
+
+
+
+FINAL NOTES
+
+
+the key insight for the presentation: frame everything around SYSTEM DESIGN.
+show the data flow diagrams, the component interactions, how the CDN routing
+decision is made, how the BBA algorithm works with the buffer zones diagram.
+
+
+
+
+
