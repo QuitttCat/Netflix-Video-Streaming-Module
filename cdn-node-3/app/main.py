@@ -16,10 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from contextlib import asynccontextmanager
 
-NODE_ID       = os.getenv("NODE_ID",       "cdn-node-1")
-NODE_NAME     = os.getenv("NODE_NAME",     "edge-dhaka")
-NODE_LOCATION = os.getenv("NODE_LOCATION", "dhaka")
-NODE_PORT     = int(os.getenv("NODE_PORT", "3001"))
+NODE_ID       = os.getenv("NODE_ID",       "cdn-node-3")
+NODE_NAME     = os.getenv("NODE_NAME",     "edge-sylhet")
+NODE_LOCATION = os.getenv("NODE_LOCATION", "sylhet")
+NODE_PORT     = int(os.getenv("NODE_PORT", "3003"))
 ORIGIN_URL    = os.getenv("ORIGIN_URL",    "http://origin:8000")
 CACHE_PATH    = os.getenv("CACHE_PATH",    "/cache")
 
@@ -166,5 +166,35 @@ async def serve_segment(video_id: int, quality: str, segment_number: int):
                 return Response(content=r.content, media_type="video/mp4")
 
         raise HTTPException(status_code=404, detail="Segment not found")
+    finally:
+        _active_reqs -= 1
+
+
+@app.get("/videos/{video_id}/{filename:path}")
+async def serve_dash_file(video_id: int, filename: str):
+    """Serve any DASH file (init-stream*.m4s, chunk-stream*.m4s) with CDN caching."""
+    global _cache_hits, _cache_misses, _active_reqs
+    safe_name = os.path.basename(filename)
+    _active_reqs += 1
+    try:
+        cache_path = os.path.join(CACHE_PATH, str(video_id), safe_name)
+        if os.path.exists(cache_path):
+            _cache_hits += 1
+            mt = "video/mp4" if safe_name.endswith(".m4s") else "application/octet-stream"
+            return FileResponse(cache_path, media_type=mt)
+
+        _cache_misses += 1
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{ORIGIN_URL}/api/videos/{video_id}/{safe_name}", timeout=30.0
+            )
+            if r.status_code == 200:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                async with aiofiles.open(cache_path, "wb") as f:
+                    await f.write(r.content)
+                mt = "video/mp4" if safe_name.endswith(".m4s") else "application/octet-stream"
+                return Response(content=r.content, media_type=mt)
+
+        raise HTTPException(status_code=404, detail="File not found")
     finally:
         _active_reqs -= 1

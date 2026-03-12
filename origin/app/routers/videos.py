@@ -49,6 +49,22 @@ async def get_segment(video_id: int, quality: str, segment_number: int):
     raise HTTPException(status_code=404, detail="Segment not found")
 
 
+@router.get("/{video_id}/{filename:path}")
+async def get_dash_file(video_id: int, filename: str):
+    """Serve any DASH file (init segments, chunk segments) by exact filename."""
+    safe_name = os.path.basename(filename)
+    path = os.path.join(VIDEO_STORAGE_PATH, str(video_id), safe_name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if safe_name.endswith(".m4s"):
+        media_type = "video/mp4"
+    elif safe_name.endswith(".mpd"):
+        media_type = "application/dash+xml"
+    else:
+        media_type = "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
+
+
 @router.post("/upload")
 async def upload_video(
     title: str,
