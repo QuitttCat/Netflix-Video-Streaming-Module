@@ -8,7 +8,11 @@ DATABASE_URL = os.getenv(
 )
 ASYNC_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
-engine = create_async_engine(ASYNC_URL, echo=False)
+engine = create_async_engine(
+    ASYNC_URL,
+    echo=False,
+    connect_args={"ssl": None},
+)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
