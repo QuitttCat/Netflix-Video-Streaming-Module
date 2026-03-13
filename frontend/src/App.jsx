@@ -4,11 +4,33 @@ import AdminDashboard from './components/AdminDashboard.jsx'
 import Login from './components/Login.jsx'
 import CatalogHome from './components/CatalogHome.jsx'
 
+function resolveViewFromPath(pathname, isAdmin) {
+  if (pathname.startsWith('/admin') && isAdmin) return 'admin'
+  if (pathname.startsWith('/watch')) return 'player'
+  return 'home'
+}
+
+function pathForView(nextView, selectedVideoId) {
+  if (nextView === 'admin') return '/admin'
+  if (nextView === 'player') return `/watch/${selectedVideoId || ''}`
+  return '/home'
+}
+
 export default function App() {
   const [auth,     setAuth]     = useState(null)     // null | { token, user }
   const [view,     setView]     = useState('home')   // 'home' | 'player' | 'admin'
   const [session,  setSession]  = useState(null)
   const [selVideo, setSelVideo] = useState(null)
+
+  const navigate = (nextView, { replace = false, videoId = null } = {}) => {
+    setView(nextView)
+    const nextPath = pathForView(nextView, videoId)
+    if (replace) {
+      window.history.replaceState({ view: nextView, videoId }, '', nextPath)
+    } else {
+      window.history.pushState({ view: nextView, videoId }, '', nextPath)
+    }
+  }
 
   // Restore session from localStorage on first load
   useEffect(() => {
@@ -16,18 +38,38 @@ export default function App() {
     if (stored) {
       try {
         const parsed = JSON.parse(stored)
+        const isAdmin = parsed.user.role === 'admin'
+        const startView = resolveViewFromPath(window.location.pathname, isAdmin)
         setAuth(parsed)
-        setView(parsed.user.role === 'admin' ? 'admin' : 'home')
+        setView(startView)
+        window.history.replaceState({ view: startView }, '', pathForView(startView))
       } catch {
         localStorage.removeItem('auth')
       }
+    } else {
+      window.history.replaceState({ view: 'home' }, '', '/home')
     }
   }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (!auth) return
+      const next = resolveViewFromPath(window.location.pathname, auth.user.role === 'admin')
+      if (next === 'player' && !session) {
+        setView('home')
+        return
+      }
+      setView(next)
+    }
+
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [auth, session])
 
   const handleLogin = (authData) => {
     localStorage.setItem('auth', JSON.stringify(authData))
     setAuth(authData)
-    setView(authData.user.role === 'admin' ? 'admin' : 'home')
+    navigate(authData.user.role === 'admin' ? 'admin' : 'home', { replace: true })
   }
 
   const handleLogout = () => {
@@ -36,6 +78,7 @@ export default function App() {
     setView('home')
     setSession(null)
     setSelVideo(null)
+    window.history.replaceState({ view: 'home' }, '', '/home')
   }
 
   const handlePlayVideo = async (video) => {
@@ -44,7 +87,7 @@ export default function App() {
       const data = await r.json()
       setSession(data)
       setSelVideo(video)
-      setView('player')
+      navigate('player', { videoId: video.id })
     } catch (e) {
       alert('Could not start playback: ' + e.message)
     }
@@ -88,15 +131,15 @@ export default function App() {
           NETFLIX
         </h1>
         <nav style={{ display: 'flex', gap: 20 }}>
-          <NavBtn label="Home"       active={view === 'home'}  onClick={() => setView('home')}  />
+          <NavBtn label="Home"       active={view === 'home'}  onClick={() => navigate('home')}  />
           {isAdmin && (
-            <NavBtn label="Dashboard" active={view === 'admin'} onClick={() => setView('admin')} />
+            <NavBtn label="Dashboard" active={view === 'admin'} onClick={() => navigate('admin')} />
           )}
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
           {view === 'player' && (
             <button
-              onClick={() => setView('home')}
+              onClick={() => window.history.back()}
               style={{ background: 'none', border: '1px solid #555', color: '#aaa',
                        padding: '6px 14px', cursor: 'pointer', borderRadius: 4, fontSize: 13 }}>
               ← Back
@@ -122,11 +165,23 @@ export default function App() {
       </header>
 
       {view === 'home' && (
-        <CatalogHome token={auth.token} onPlayEpisode={handlePlayEpisode} />
+        <CatalogHome token={auth.token} onPlayEpisode={handlePlayEpisode} onPlayVideo={handlePlayVideo} />
       )}
 
       {view === 'player' && session && (
         <VideoPlayer session={session} video={selVideo} />
+      )}
+
+      {view === 'player' && !session && (
+        <div style={{ padding: 40, color: '#aaa' }}>
+          Playback session expired.{' '}
+          <button
+            onClick={() => navigate('home', { replace: true })}
+            style={{ background: 'none', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
+          >
+            Go Home
+          </button>
+        </div>
       )}
 
       {view === 'admin' && <AdminDashboard token={auth.token} />}

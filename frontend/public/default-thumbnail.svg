@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-label="Default thumbnail">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2a2a2a"/>
+      <stop offset="100%" stop-color="#111111"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <text x="50%" y="48%" text-anchor="middle" fill="#e50914" font-family="Arial, Helvetica, sans-serif" font-size="88" font-weight="700">NETFLIX</text>
+  <text x="50%" y="58%" text-anchor="middle" fill="#f1f1f1" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="600">Default Thumbnail</text>
+</svg>

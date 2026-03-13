@@ -56,8 +56,9 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
     movie_items = movie_result.scalars().all()
 
     continue_result = await db.execute(
-        select(Episode, Series)
+        select(Episode, Series, Video)
         .join(Series, Series.id == Episode.series_id)
+        .outerjoin(Video, Video.id == Episode.video_id)
         .where(Episode.playable == True)
         .limit(10)
     )
@@ -76,11 +77,12 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
                         "episode_id": e.id,
                         "title": e.title,
                         "subtitle": f"{s.title} • S1:E{e.episode_number}",
+                        "thumbnail_url": f"/api/videos/{e.video_id}/thumbnail" if e.video_id else None,
                         "poster_url": s.poster_url,
                         "backdrop_url": s.backdrop_url,
                         "playable": e.playable,
                     }
-                    for e, s in continue_items
+                    for e, s, v in continue_items
                 ],
             },
             {"id": "trending", "title": "Trending Now", "type": "series", "items": [serialize_series(x) for x in trending]},
@@ -131,6 +133,7 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
                         "title": ep.title,
                         "playable": ep.playable,
                         "video_id": ep.video_id,
+                        "thumbnail_url": f"/api/videos/{ep.video_id}/thumbnail" if ep.video_id else None,
                         "missing_video": is_missing,
                     }
                 )

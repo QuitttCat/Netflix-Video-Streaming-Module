@@ -16,12 +16,11 @@ router = APIRouter()
 VIDEO_STORAGE_PATH = os.getenv("VIDEO_STORAGE_PATH", "/videos")
 
 
-@router.get("/{video_id}")
-async def get_video(video_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Video).where(Video.id == video_id))
-    video = result.scalar_one_or_none()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+def _thumbnail_api_url(video_id: int) -> str:
+    return f"/api/videos/{video_id}/thumbnail"
+
+
+def _video_payload(video: Video) -> dict:
     return {
         "id":                  video.id,
         "title":               video.title,
@@ -30,6 +29,113 @@ async def get_video(video_id: int, db: AsyncSession = Depends(get_db)):
         "total_segments":      video.total_segments,
         "available_qualities": video.available_qualities,
         "next_episode_id":     video.next_episode_id,
+        "storage_path":        video.storage_path,
+        "thumbnail_url":       _thumbnail_api_url(video.id),
+        "has_thumbnail":       bool(video.thumbnail_path),
+    }
+
+
+@router.get("/")
+async def list_videos(limit: int = 30, db: AsyncSession = Depends(get_db)):
+    safe_limit = max(1, min(200, limit))
+    result = await db.execute(select(Video).order_by(Video.id.desc()).limit(safe_limit))
+    videos = result.scalars().all()
+    return {"items": [_video_payload(v) for v in videos]}
+
+
+@router.get("/{video_id}")
+async def get_video(video_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return _video_payload(video)
+
+
+@router.get("/{video_id}/thumbnail")
+async def get_video_thumbnail(video_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if video.thumbnail_path:
+        thumb_ref = str(video.thumbnail_path)
+
+        if thumb_ref.startswith("s3://"):
+            try:
+                _, key = parse_s3_uri(thumb_ref)
+                s3 = S3MediaService()
+                body, content_type = await run_in_threadpool(s3.get_object_bytes, key)
+                return Response(content=body, media_type=content_type or "image/jpeg")
+            except Exception:
+                pass
+        else:
+            local_thumb = thumb_ref if os.path.isabs(thumb_ref) else os.path.join(VIDEO_STORAGE_PATH, str(video.id), thumb_ref)
+            if os.path.exists(local_thumb):
+                mt = "image/png" if local_thumb.lower().endswith(".png") else "image/jpeg"
+                return FileResponse(local_thumb, media_type=mt)
+
+    fallback_path = os.path.join(VIDEO_STORAGE_PATH, "defaults", "thumbnail.jpg")
+    if os.path.exists(fallback_path):
+        return FileResponse(fallback_path, media_type="image/jpeg")
+
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720'>"
+        "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
+        "<stop offset='0%' stop-color='#2b2b2b'/><stop offset='100%' stop-color='#101010'/></linearGradient></defs>"
+        "<rect width='100%' height='100%' fill='url(#g)'/>"
+        "<text x='50%' y='52%' dominant-baseline='middle' text-anchor='middle' fill='#e5e5e5'"
+        " font-family='Arial' font-size='64' font-weight='700'>NETFLIX DEMO</text>"
+        "</svg>"
+    )
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.post("/{video_id}/thumbnail")
+async def upload_video_thumbnail(
+    video_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Thumbnail file is empty")
+
+    ext = os.path.splitext(file.filename or "thumbnail.jpg")[1].lower() or ".jpg"
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(status_code=400, detail="Thumbnail must be jpg/jpeg/png/webp")
+    media_type = file.content_type or ("image/png" if ext == ".png" else "image/jpeg")
+
+    if video.storage_path and str(video.storage_path).startswith("s3://"):
+        _, prefix = parse_s3_uri(video.storage_path)
+        thumb_name = f"thumbnail{ext}"
+        key = join_key(prefix, thumb_name)
+        s3 = S3MediaService()
+        await run_in_threadpool(s3.upload_bytes, key, data, media_type)
+        video.thumbnail_path = f"s3://{s3.bucket_name}/{key}"
+    else:
+        video_dir = os.path.join(VIDEO_STORAGE_PATH, str(video_id))
+        os.makedirs(video_dir, exist_ok=True)
+        thumb_name = f"thumbnail{ext}"
+        local_thumb = os.path.join(video_dir, thumb_name)
+        async with aiofiles.open(local_thumb, "wb") as f:
+            await f.write(data)
+        video.thumbnail_path = thumb_name
+
+    await db.commit()
+    await db.refresh(video)
+
+    return {
+        "ok": True,
+        "video_id": video.id,
+        "thumbnail_url": _thumbnail_api_url(video.id),
+        "thumbnail_path": video.thumbnail_path,
     }
 
 
@@ -183,6 +289,7 @@ async def upload_video(
             "manifest_key": out["manifest_key"],
             "total_segments": video.total_segments,
             "duration_seconds": video.duration_seconds,
+            "thumbnail_url": _thumbnail_api_url(video.id),
         }
 
     raw_path = os.path.join(VIDEO_STORAGE_PATH, str(video.id), "raw.mp4")
@@ -210,4 +317,5 @@ async def upload_video(
         "storage_path": video.storage_path,
         "total_segments": video.total_segments,
         "duration_seconds": video.duration_seconds,
+        "thumbnail_url": _thumbnail_api_url(video.id),
     }

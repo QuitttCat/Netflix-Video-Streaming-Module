@@ -86,6 +86,7 @@ class Video(Base):
     total_segments      = Column(Integer, default=0)
     available_qualities = Column(ARRAY(String))
     storage_path        = Column(String(512))
+    thumbnail_path      = Column(String(1024), nullable=True)
     next_episode_id     = Column(Integer, ForeignKey("videos.id"), nullable=True)
     created_at          = Column(DateTime, default=datetime.utcnow)
 

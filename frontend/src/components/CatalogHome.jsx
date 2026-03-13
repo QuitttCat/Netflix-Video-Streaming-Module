@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 
-export default function CatalogHome({ token, onPlayEpisode }) {
+export default function CatalogHome({ token, onPlayEpisode, onPlayVideo }) {
   const [data, setData] = useState(null)
+  const [uploads, setUploads] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -32,6 +33,23 @@ export default function CatalogHome({ token, onPlayEpisode }) {
     }
   }, [token])
 
+  useEffect(() => {
+    let alive = true
+    fetch('/api/videos?limit=24')
+      .then(async r => {
+        const payloadText = await r.text()
+        const payload = payloadText ? JSON.parse(payloadText) : {}
+        if (!r.ok) throw new Error(payload.detail || 'Failed to load videos')
+        if (alive) setUploads(Array.isArray(payload.items) ? payload.items : [])
+      })
+      .catch(() => {
+        if (alive) setUploads([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
   if (error) {
     return (
       <div style={{ padding: 40 }}>
@@ -56,7 +74,7 @@ export default function CatalogHome({ token, onPlayEpisode }) {
   const rows = Array.isArray(data.rows) ? data.rows : []
   const continueRow = rows.find(r => r.id === 'continue')
   const firstEpisodeId = continueRow?.items?.[0]?.episode_id || 1
-  const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0)
+  const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0) || uploads.length > 0
 
   return (
     <div>
@@ -65,6 +83,15 @@ export default function CatalogHome({ token, onPlayEpisode }) {
       )}
 
       <div style={{ marginTop: -80, position: 'relative', zIndex: 2, paddingBottom: 36 }}>
+        <Row
+          key="uploads"
+          title="Uploaded Videos"
+          items={uploads}
+          type="video"
+          onPlayEpisode={onPlayEpisode}
+          onPlayVideo={onPlayVideo}
+        />
+
         {rows.map(row => (
           <Row
             key={row.id}
@@ -72,6 +99,7 @@ export default function CatalogHome({ token, onPlayEpisode }) {
             items={row.items}
             type={row.type}
             onPlayEpisode={onPlayEpisode}
+            onPlayVideo={onPlayVideo}
           />
         ))}
 
@@ -124,7 +152,7 @@ function HeroBanner({ hero, onPlay }) {
   )
 }
 
-function Row({ title, items, type, onPlayEpisode }) {
+function Row({ title, items, type, onPlayEpisode, onPlayVideo }) {
   const list = Array.isArray(items) ? items : []
   return (
     <div style={{ padding: '0 48px', marginTop: 28 }}>
@@ -142,8 +170,9 @@ function Row({ title, items, type, onPlayEpisode }) {
             item={item}
             onClick={() => {
               if (type === 'episode') onPlayEpisode(item.episode_id)
+              if (type === 'video') onPlayVideo(item)
             }}
-            clickable={type === 'episode'}
+            clickable={type === 'episode' || type === 'video'}
           />
         ))}
       </div>
@@ -153,7 +182,7 @@ function Row({ title, items, type, onPlayEpisode }) {
 
 function Card({ item, onClick, clickable }) {
   const [hover, setHover] = useState(false)
-  const imageUrl = item.poster_url || item.backdrop_url || ''
+  const imageUrl = item.thumbnail_url || item.poster_url || item.backdrop_url || '/default-thumbnail.svg'
 
   return (
     <div
@@ -204,7 +233,7 @@ function Card({ item, onClick, clickable }) {
       <div style={{ padding: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 13 }}>{item.title}</div>
         <div style={{ fontSize: 12, color: '#9a9a9a', marginTop: 4, minHeight: 18 }}>
-          {item.subtitle || `${item.year || ''} ${item.maturity || ''}`}
+          {item.subtitle || (item.duration_seconds ? `${item.duration_seconds}s` : `${item.year || ''} ${item.maturity || ''}`)}
         </div>
       </div>
     </div>

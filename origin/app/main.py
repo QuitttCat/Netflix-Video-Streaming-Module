@@ -7,13 +7,14 @@ from .models import User, Series, Season, Episode, MediaTrack, Video
 from .auth import hash_password
 from .routers import cdn, playback, buffering, prefetch, monitor, videos, catalog, media_storage
 from .routers import auth as auth_router
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_path VARCHAR(1024)"))
 
     # Seed minimal default data (users + one demo playable episode)
     async with AsyncSessionLocal() as db:

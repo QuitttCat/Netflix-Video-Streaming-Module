@@ -10,7 +10,9 @@ export default function AdminDashboard({ token }) {
   const [modalSeason, setModalSeason] = useState(null)
   const [uploadMsg, setUploadMsg] = useState('')
   const [fileByEpisode, setFileByEpisode] = useState({})
+  const [thumbByEpisode, setThumbByEpisode] = useState({})
   const [uploadingEpisodeId, setUploadingEpisodeId] = useState(null)
+  const [uploadingThumbEpisodeId, setUploadingThumbEpisodeId] = useState(null)
   const [seedStatus, setSeedStatus] = useState(null)
   const [seedMsg, setSeedMsg] = useState('')
   const wsRef = useRef(null)
@@ -139,6 +141,46 @@ export default function AdminDashboard({ token }) {
       setSeedStatus(payload)
     } catch (e) {
       setSeedMsg(`Seed status error: ${e.message}`)
+    }
+  }
+
+  const uploadEpisodeThumbnail = async (episode) => {
+    setUploadMsg('')
+    if (!episode.video_id) {
+      setUploadMsg(`Upload video first for S${modalSeason?.season_number}:E${episode.episode_number}`)
+      return
+    }
+
+    const file = thumbByEpisode[episode.episode_id]
+    if (!file) {
+      setUploadMsg(`Select an image for S${modalSeason?.season_number}:E${episode.episode_number}`)
+      return
+    }
+
+    try {
+      setUploadingThumbEpisodeId(episode.episode_id)
+      const form = new FormData()
+      form.append('file', file)
+
+      const r = await fetch(`/api/videos/${episode.video_id}/thumbnail`, {
+        method: 'POST',
+        body: form,
+      })
+      const payloadText = await r.text()
+      const payload = parseMaybeJson(payloadText)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Thumbnail upload failed')
+
+      setUploadMsg(`Thumbnail uploaded for episode ${episode.episode_number} (video ${episode.video_id}).`)
+      setThumbByEpisode(prev => {
+        const copy = { ...prev }
+        delete copy[episode.episode_id]
+        return copy
+      })
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Thumbnail upload error: ${e.message}`)
+    } finally {
+      setUploadingThumbEpisodeId(null)
     }
   }
 
@@ -385,7 +427,7 @@ export default function AdminDashboard({ token }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr>
-                    {['Ep', 'Title', 'Status', 'Select Video', 'Action'].map(h => (
+                    {['Ep', 'Title', 'Status', 'Select Video', 'Select Thumbnail', 'Actions'].map(h => (
                       <th key={h} style={{ textAlign: 'left', color: '#777', padding: '6px 8px', borderBottom: '1px solid #2a2a2a' }}>{h}</th>
                     ))}
                   </tr>
@@ -407,17 +449,39 @@ export default function AdminDashboard({ token }) {
                         />
                       </td>
                       <td style={{ padding: '8px' }}>
-                        <button
-                          onClick={() => uploadEpisodeVideo(ep)}
-                          disabled={uploadingEpisodeId === ep.episode_id}
-                          style={{
-                            background: '#e50914', color: '#fff', border: 'none', borderRadius: 4,
-                            padding: '7px 10px', cursor: 'pointer',
-                            opacity: uploadingEpisodeId === ep.episode_id ? 0.6 : 1,
-                          }}
-                        >
-                          {uploadingEpisodeId === ep.episode_id ? 'Uploading + Encoding…' : 'Upload'}
-                        </button>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          onChange={e => setThumbByEpisode(prev => ({ ...prev, [ep.episode_id]: e.target.files?.[0] || null }))}
+                          style={{ color: '#aaa' }}
+                        />
+                      </td>
+                      <td style={{ padding: '8px' }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <button
+                            onClick={() => uploadEpisodeVideo(ep)}
+                            disabled={uploadingEpisodeId === ep.episode_id}
+                            style={{
+                              background: '#e50914', color: '#fff', border: 'none', borderRadius: 4,
+                              padding: '7px 10px', cursor: 'pointer',
+                              opacity: uploadingEpisodeId === ep.episode_id ? 0.6 : 1,
+                            }}
+                          >
+                            {uploadingEpisodeId === ep.episode_id ? 'Uploading…' : 'Upload Video'}
+                          </button>
+
+                          <button
+                            onClick={() => uploadEpisodeThumbnail(ep)}
+                            disabled={uploadingThumbEpisodeId === ep.episode_id || !ep.video_id}
+                            style={{
+                              background: '#333', color: '#fff', border: '1px solid #555', borderRadius: 4,
+                              padding: '7px 10px', cursor: ep.video_id ? 'pointer' : 'not-allowed',
+                              opacity: (uploadingThumbEpisodeId === ep.episode_id || !ep.video_id) ? 0.6 : 1,
+                            }}
+                          >
+                            {uploadingThumbEpisodeId === ep.episode_id ? 'Uploading…' : 'Upload Thumbnail'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
