@@ -77,6 +77,15 @@ class WatchProgress(Base):
     updated_at       = Column(DateTime, default=datetime.utcnow)
 
 
+class VideoProgress(Base):
+    __tablename__ = "video_progress"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    user_id          = Column(Integer, ForeignKey("users.id"), nullable=False)
+    video_id         = Column(Integer, ForeignKey("videos.id"), nullable=False)
+    playhead_seconds = Column(Float, default=0.0)
+    updated_at       = Column(DateTime, default=datetime.utcnow)
+
+
 class Video(Base):
     __tablename__ = "videos"
     id                  = Column(Integer, primary_key=True)

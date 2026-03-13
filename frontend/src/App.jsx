@@ -200,7 +200,7 @@ export default function App() {
       )}
 
       {view === 'player' && session && (
-        <VideoPlayer session={session} video={selVideo} />
+        <VideoPlayer session={session} video={selVideo} user={auth.user} />
       )}
 
       {view === 'player' && !session && (

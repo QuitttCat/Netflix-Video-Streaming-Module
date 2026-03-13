@@ -2,14 +2,14 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import dashjs from 'dashjs'
 import BufferBar from './BufferBar.jsx'
 
-const QUALITIES  = ['360p', '480p', '720p', '1080p']
+const QUALITIES  = ['320p', '480p', '720p']
 const MAX_BUF    = 60
 const RESERVOIR  = 10
 const CUSHION_T  = 45
 
 function bba(buf) {
-  if (buf <= RESERVOIR) return { quality: '360p', zone: 'reservoir' }
-  if (buf >= CUSHION_T) return { quality: '1080p', zone: 'upper_reservoir' }
+  if (buf <= RESERVOIR) return { quality: '320p', zone: 'reservoir' }
+  if (buf >= CUSHION_T) return { quality: '720p', zone: 'upper_reservoir' }
   const r = (buf - RESERVOIR) / (CUSHION_T - RESERVOIR)
   return { quality: QUALITIES[Math.min(Math.floor(r * QUALITIES.length), QUALITIES.length - 1)], zone: 'cushion' }
 }
@@ -22,9 +22,11 @@ const NET_PRESETS = {
   offline: { label: 'Offline (0)',       cap: 0,     color: '#ff0000' },
 }
 
-export default function VideoPlayer({ session, video }) {
+export default function VideoPlayer({ session, video, user }) {
   const videoRef  = useRef(null)
   const playerRef = useRef(null)
+  const resumeAppliedRef = useRef(false)
+  const lastProgressSavedAtRef = useRef(0)
   const [playing,     setPlaying]     = useState(false)
   const [muted,       setMuted]       = useState(false)
   const [volume,      setVolume]      = useState(1)
@@ -33,7 +35,7 @@ export default function VideoPlayer({ session, video }) {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const [zone,        setZone]        = useState('reservoir')
-  const [quality,     setQuality]     = useState('360p')
+  const [quality,     setQuality]     = useState('320p')
   const [playhead,    setPlayhead]    = useState(0)
   const [priority,    setPriority]    = useState('video')
   const [prefetch,    setPrefetch]    = useState(null)
@@ -96,6 +98,33 @@ export default function VideoPlayer({ session, video }) {
   }, [session, video])
 
   useEffect(() => {
+    resumeAppliedRef.current = false
+  }, [session?.session_id])
+
+  useEffect(() => {
+    const el = videoRef.current
+    const resume = Number(session?.resume_position_seconds || 0)
+    if (!el || resume <= 0 || resumeAppliedRef.current === true) return
+
+    const applyResume = () => {
+      if (resumeAppliedRef.current) return
+      const cap = Number.isFinite(el.duration) && el.duration > 0 ? Math.max(0, el.duration - 1) : resume
+      const next = Math.max(0, Math.min(resume, cap))
+      el.currentTime = next
+      setPlayhead(next)
+      resumeAppliedRef.current = true
+    }
+
+    if (el.readyState >= 1) {
+      applyResume()
+      return
+    }
+
+    el.addEventListener('loadedmetadata', applyResume, { once: true })
+    return () => el.removeEventListener('loadedmetadata', applyResume)
+  }, [session?.resume_position_seconds, dashReady])
+
+  useEffect(() => {
     if (!videoRef.current) return
     videoRef.current.volume = volume
     videoRef.current.muted = muted
@@ -152,7 +181,7 @@ export default function VideoPlayer({ session, video }) {
         const capKbps = NET_PRESETS[netMode].cap
         // Simulate: each tick (500ms), we "download" some data and "consume" some
         // consumption = current quality bitrate worth of 0.5s
-        const qualityBitrates = { '360p': 400, '480p': 800, '720p': 1500, '1080p': 3000 }
+        const qualityBitrates = { '320p': 250, '480p': 800, '720p': 1500 }
         const consumeRate = qualityBitrates[quality] || 800  // kbps being consumed
         const downloadSeconds = capKbps > 0 ? (capKbps / consumeRate) * 0.5 : 0
         const drainSeconds = 0.5  // we consume 0.5s of buffer per 0.5s tick
@@ -208,11 +237,55 @@ export default function VideoPlayer({ session, video }) {
     } catch (_) {}
   }, [simBuf, quality, playhead, session, video, preset])
 
+  const savePlaybackProgress = useCallback(async (force = false) => {
+    if (!session?.session_id || !video?.id || !user?.username) return
+    const now = Date.now()
+    if (!force && now - lastProgressSavedAtRef.current < 10000) return
+    lastProgressSavedAtRef.current = now
+
+    try {
+      await fetch('/api/playback/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: session.session_id,
+          user_id: user.username,
+          video_id: video.id,
+          playhead_position: playhead,
+        }),
+      })
+    } catch (_) {}
+  }, [session?.session_id, video?.id, user?.username, playhead])
+
   useEffect(() => {
     if (!playing) return
     const t = setInterval(report, 3000)
     return () => clearInterval(t)
   }, [playing, report])
+
+  useEffect(() => {
+    if (!playing) return
+    const t = setInterval(() => {
+      savePlaybackProgress(false)
+    }, 10000)
+    return () => clearInterval(t)
+  }, [playing, savePlaybackProgress])
+
+  useEffect(() => {
+    if (playing) return
+    savePlaybackProgress(true)
+  }, [playing, savePlaybackProgress])
+
+  useEffect(() => {
+    return () => {
+      savePlaybackProgress(true)
+      if (session?.session_id) {
+        fetch(`/api/playback/end?session_id=${encodeURIComponent(session.session_id)}`, {
+          method: 'POST',
+        }).catch(() => {})
+      }
+    }
+  }, [savePlaybackProgress, session?.session_id])
 
   // Trigger next-episode prefetch at 90%
   useEffect(() => {
@@ -431,9 +504,9 @@ export default function VideoPlayer({ session, video }) {
 
           <Panel title="Algorithm Zones">
             <div style={{ fontSize: 11, color: '#555', lineHeight: 2 }}>
-              <div><span style={{ color: '#e50914' }}>|</span> 0-10s = Reservoir = 360p</div>
+              <div><span style={{ color: '#e50914' }}>|</span> 0-10s = Reservoir = 320p</div>
               <div><span style={{ color: '#f5a623' }}>|</span> 10-45s = Cushion = linear</div>
-              <div><span style={{ color: '#46d369' }}>|</span> 45-60s = Upper = 1080p</div>
+              <div><span style={{ color: '#46d369' }}>|</span> 45-60s = Upper = 720p</div>
             </div>
           </Panel>
 

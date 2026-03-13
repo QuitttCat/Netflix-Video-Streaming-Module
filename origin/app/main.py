@@ -15,6 +15,16 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_path VARCHAR(1024)"))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS video_progress (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                video_id INTEGER NOT NULL REFERENCES videos(id),
+                playhead_seconds FLOAT DEFAULT 0.0,
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(user_id, video_id)
+            )
+        """))
 
     # Seed minimal default data (users + one demo playable episode)
     async with AsyncSessionLocal() as db:

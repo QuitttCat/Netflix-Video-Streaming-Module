@@ -132,6 +132,15 @@ CREATE TABLE IF NOT EXISTS watch_progress (
     updated_at       TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS video_progress (
+    id               SERIAL PRIMARY KEY,
+    user_id          INTEGER NOT NULL REFERENCES users(id),
+    video_id         INTEGER NOT NULL REFERENCES videos(id),
+    playhead_seconds FLOAT DEFAULT 0.0,
+    updated_at       TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id, video_id)
+);
+
 -- Sample videos
 INSERT INTO videos (title, description, duration_seconds, total_segments, available_qualities, storage_path)
 VALUES
