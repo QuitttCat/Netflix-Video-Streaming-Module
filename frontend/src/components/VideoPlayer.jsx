@@ -423,15 +423,10 @@ export default function VideoPlayer({ session, video, user }) {
             </div>
           </div>
 
-          {/* Progress bar */}
-          <div style={{ marginTop: 10, padding: '10px 0' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#666', marginBottom: 6 }}>
-              <span>{fmtTime(playhead)}</span>
-              <span>{fmtTime(duration)}</span>
-            </div>
-            <div style={{ height: 4, background: '#333', borderRadius: 2 }}>
-              <div style={{ height: '100%', background: '#e50914', borderRadius: 2,
-                            width: `${(playhead / duration) * 100}%`, transition: 'width 0.5s' }} />
+          <div style={{ marginTop: 12, padding: '8px 2px 2px' }}>
+            <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 0.2 }}>{video?.title || 'Now Playing'}</div>
+            <div style={{ marginTop: 6, color: '#b0b0b0', fontSize: 14, lineHeight: 1.6 }}>
+              {video?.description || video?.subtitle || 'No description available.'}
             </div>
           </div>
 

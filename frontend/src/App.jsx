@@ -109,7 +109,8 @@ export default function App() {
 
       await handlePlayVideo({
         id: resolved.video_id,
-        title: `Episode ${episodeId}`,
+        title: resolved.title || `Episode ${episodeId}`,
+        description: resolved.description || '',
         subtitle: resolved.fallback ? 'Demo Fallback' : 'Playable Episode',
       })
     } catch (e) {

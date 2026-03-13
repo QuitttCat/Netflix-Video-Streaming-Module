@@ -394,15 +394,25 @@ async def admin_delete_series_thumbnail(
 
 @router.get("/episodes/{episode_id}/playback")
 async def resolve_episode_playback(episode_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-    result = await db.execute(select(Episode).where(Episode.id == episode_id))
-    episode = result.scalar_one_or_none()
-    if not episode:
+    result = await db.execute(
+        select(Episode, Series)
+        .join(Series, Series.id == Episode.series_id)
+        .where(Episode.id == episode_id)
+    )
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Episode not found")
+    episode, series = row
+
+    resolved_title = episode.title or f"Episode {episode.id}"
+    resolved_description = (episode.synopsis or "").strip() or (series.synopsis or "").strip()
 
     if episode.playable and episode.video_id:
         return {
             "episode_id": episode.id,
             "video_id": episode.video_id,
+            "title": resolved_title,
+            "description": resolved_description,
             "available": True,
             "fallback": False,
             "message": "Playing selected episode",
@@ -412,6 +422,8 @@ async def resolve_episode_playback(episode_id: int, db: AsyncSession = Depends(g
     return {
         "episode_id": episode.id,
         "video_id": demo_video_id,
+        "title": resolved_title,
+        "description": resolved_description,
         "available": False,
         "fallback": True,
         "message": "This title is not uploaded yet. Playing demo episode instead.",
