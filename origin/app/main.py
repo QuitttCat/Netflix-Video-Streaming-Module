@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from .database import engine, Base, AsyncSessionLocal
 from .models import User, Series, Season, Episode, MediaTrack, Video
 from .auth import hash_password
-from .routers import cdn, playback, buffering, prefetch, monitor, videos, catalog
+from .routers import cdn, playback, buffering, prefetch, monitor, videos, catalog, media_storage
 from .routers import auth as auth_router
 from sqlalchemy import select
 
@@ -107,6 +107,7 @@ app.include_router(prefetch.router,  prefix="/api/prefetch",  tags=["Prefetch"])
 app.include_router(monitor.router,   prefix="/api/monitor",   tags=["Monitor"])
 app.include_router(videos.router,    prefix="/api/videos",    tags=["Videos"])
 app.include_router(catalog.router,   prefix="/api/catalog",   tags=["Catalog"])
+app.include_router(media_storage.router, prefix="/api/media", tags=["Media Storage"])
 app.include_router(monitor.ws_router)
 app.include_router(auth_router.router, prefix="/api/auth", tags=["Auth"])
 
