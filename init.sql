@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS videos (
     total_segments    INTEGER DEFAULT 0,
     available_qualities TEXT[] DEFAULT '{}',
     storage_path VARCHAR(512),
+    thumbnail_path VARCHAR(1024),
     next_episode_id INTEGER REFERENCES videos(id),
     created_at  TIMESTAMP DEFAULT NOW()
 );

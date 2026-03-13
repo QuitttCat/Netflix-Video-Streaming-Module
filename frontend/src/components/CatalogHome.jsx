@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export default function CatalogHome({ token, onPlayEpisode, onPlayVideo }) {
+export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlaySeries }) {
   const [data, setData] = useState(null)
   const [uploads, setUploads] = useState([])
   const [error, setError] = useState('')
@@ -90,6 +90,7 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo }) {
           type="video"
           onPlayEpisode={onPlayEpisode}
           onPlayVideo={onPlayVideo}
+          onPlaySeries={onPlaySeries}
         />
 
         {rows.map(row => (
@@ -100,6 +101,7 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo }) {
             type={row.type}
             onPlayEpisode={onPlayEpisode}
             onPlayVideo={onPlayVideo}
+            onPlaySeries={onPlaySeries}
           />
         ))}
 
@@ -152,7 +154,7 @@ function HeroBanner({ hero, onPlay }) {
   )
 }
 
-function Row({ title, items, type, onPlayEpisode, onPlayVideo }) {
+function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries }) {
   const list = Array.isArray(items) ? items : []
   return (
     <div style={{ padding: '0 48px', marginTop: 28 }}>
@@ -171,8 +173,9 @@ function Row({ title, items, type, onPlayEpisode, onPlayVideo }) {
             onClick={() => {
               if (type === 'episode') onPlayEpisode(item.episode_id)
               if (type === 'video') onPlayVideo(item)
+              if (type === 'series') onPlaySeries(item.series_id)
             }}
-            clickable={type === 'episode' || type === 'video'}
+            clickable={type === 'episode' || type === 'video' || type === 'series'}
           />
         ))}
       </div>
@@ -221,7 +224,7 @@ function Card({ item, onClick, clickable }) {
           </div>
         )}
 
-        {clickable && !item.playable && (
+        {clickable && item.playable === false && (
           <span style={{
             position: 'absolute', top: 8, right: 8, fontSize: 11,
             background: 'rgba(229,9,20,0.9)', padding: '4px 8px', borderRadius: 3,

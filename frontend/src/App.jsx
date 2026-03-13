@@ -115,6 +115,25 @@ export default function App() {
     }
   }
 
+  const handlePlaySeries = async (seriesId) => {
+    try {
+      const r = await fetch(`/api/catalog/series/${seriesId}/episodes`, {
+        headers: { Authorization: `Bearer ${auth.token}` },
+      })
+      const payload = await r.json()
+      if (!r.ok) throw new Error(payload.detail || 'Could not load episodes')
+
+      const episodes = Array.isArray(payload.episodes) ? payload.episodes : []
+      if (episodes.length === 0) {
+        throw new Error('No episodes found for this title')
+      }
+
+      await handlePlayEpisode(episodes[0].episode_id)
+    } catch (e) {
+      alert(e.message)
+    }
+  }
+
   // Not logged in → show login page
   if (!auth) return <Login onLogin={handleLogin} />
 
@@ -165,7 +184,12 @@ export default function App() {
       </header>
 
       {view === 'home' && (
-        <CatalogHome token={auth.token} onPlayEpisode={handlePlayEpisode} onPlayVideo={handlePlayVideo} />
+        <CatalogHome
+          token={auth.token}
+          onPlayEpisode={handlePlayEpisode}
+          onPlayVideo={handlePlayVideo}
+          onPlaySeries={handlePlaySeries}
+        />
       )}
 
       {view === 'player' && session && (
