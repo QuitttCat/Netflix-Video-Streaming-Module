@@ -3,36 +3,69 @@ import { useEffect, useState } from 'react'
 export default function CatalogHome({ token, onPlayEpisode }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let alive = true
+    setLoading(true)
     fetch('/api/catalog/home', {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(async r => {
-        const payload = await r.json()
+        const payloadText = await r.text()
+        const payload = payloadText ? JSON.parse(payloadText) : {}
         if (!r.ok) throw new Error(payload.detail || 'Failed to load catalog')
-        setData(payload)
+        if (alive) {
+          setData(payload)
+          setError('')
+        }
       })
-      .catch(e => setError(e.message))
+      .catch(e => {
+        if (alive) setError(e.message)
+      })
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+
+    return () => {
+      alive = false
+    }
   }, [token])
 
   if (error) {
-    return <div style={{ padding: 40, color: '#e50914' }}>Catalog error: {error}</div>
+    return (
+      <div style={{ padding: 40 }}>
+        <div style={{ color: '#e50914', marginBottom: 14 }}>Catalog error: {error}</div>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            background: '#e50914', color: '#fff', border: 'none', borderRadius: 4,
+            padding: '8px 14px', cursor: 'pointer', fontWeight: 700,
+          }}
+        >
+          Reload
+        </button>
+      </div>
+    )
   }
-  if (!data) {
+  if (loading || !data) {
     return <div style={{ padding: 40, color: '#aaa' }}>Loading catalog…</div>
   }
 
   const hero = data.hero
+  const rows = Array.isArray(data.rows) ? data.rows : []
+  const continueRow = rows.find(r => r.id === 'continue')
+  const firstEpisodeId = continueRow?.items?.[0]?.episode_id || 1
+  const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0)
 
   return (
     <div>
       {hero && (
-        <HeroBanner hero={hero} onPlay={() => onPlayEpisode(1)} />
+        <HeroBanner hero={hero} onPlay={() => onPlayEpisode(firstEpisodeId)} />
       )}
 
       <div style={{ marginTop: -80, position: 'relative', zIndex: 2, paddingBottom: 36 }}>
-        {data.rows?.map(row => (
+        {rows.map(row => (
           <Row
             key={row.id}
             title={row.title}
@@ -41,16 +74,28 @@ export default function CatalogHome({ token, onPlayEpisode }) {
             onPlayEpisode={onPlayEpisode}
           />
         ))}
+
+        {!hasAnyItems && (
+          <div style={{ padding: '0 48px', marginTop: 20, color: '#b3b3b3' }}>
+            No catalog items yet. Seed catalog from admin dashboard.
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
 function HeroBanner({ hero, onPlay }) {
+  const fallbackBg =
+    'linear-gradient(135deg, rgba(229,9,20,0.35) 0%, rgba(20,20,20,1) 50%, rgba(20,20,20,1) 100%)'
+  const withImage = hero.backdrop_url
+    ? `linear-gradient(to top, #141414 8%, rgba(20,20,20,0.3) 40%, rgba(20,20,20,0.4) 100%), url(${hero.backdrop_url})`
+    : fallbackBg
+
   return (
     <div style={{
       height: 560,
-      backgroundImage: `linear-gradient(to top, #141414 8%, rgba(20,20,20,0.3) 40%, rgba(20,20,20,0.4) 100%), url(${hero.backdrop_url})`,
+      backgroundImage: withImage,
       backgroundSize: 'cover',
       backgroundPosition: 'center top',
       display: 'flex',
@@ -80,11 +125,18 @@ function HeroBanner({ hero, onPlay }) {
 }
 
 function Row({ title, items, type, onPlayEpisode }) {
+  const list = Array.isArray(items) ? items : []
   return (
     <div style={{ padding: '0 48px', marginTop: 28 }}>
       <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>{title}</div>
       <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 10 }}>
-        {items?.map((item, idx) => (
+        {list.length === 0 && (
+          <div style={{ color: '#777', fontSize: 13, padding: '10px 2px' }}>
+            No items available.
+          </div>
+        )}
+
+        {list.map((item, idx) => (
           <Card
             key={`${title}-${idx}`}
             item={item}
@@ -101,6 +153,8 @@ function Row({ title, items, type, onPlayEpisode }) {
 
 function Card({ item, onClick, clickable }) {
   const [hover, setHover] = useState(false)
+  const imageUrl = item.poster_url || item.backdrop_url || ''
+
   return (
     <div
       onMouseEnter={() => setHover(true)}
@@ -120,13 +174,24 @@ function Card({ item, onClick, clickable }) {
       <div
         style={{
           height: 124,
-          backgroundImage: `url(${item.poster_url || item.backdrop_url || ''})`,
+          backgroundImage: imageUrl
+            ? `url(${imageUrl})`
+            : 'linear-gradient(120deg, #363636 0%, #222 100%)',
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           position: 'relative',
           backgroundColor: '#333',
         }}
       >
+        {!imageUrl && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#d2d2d2', fontSize: 12, fontWeight: 700, letterSpacing: 0.8,
+          }}>
+            {item.content_type === 'movie' ? 'MOVIE' : 'TITLE'}
+          </div>
+        )}
+
         {clickable && !item.playable && (
           <span style={{
             position: 'absolute', top: 8, right: 8, fontSize: 11,
