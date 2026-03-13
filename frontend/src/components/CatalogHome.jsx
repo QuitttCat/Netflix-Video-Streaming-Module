@@ -4,6 +4,7 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [seriesSearch, setSeriesSearch] = useState('')
   const [seriesModal, setSeriesModal] = useState(null)
   const [seriesEpisodes, setSeriesEpisodes] = useState([])
   const [seriesEpisodesLoading, setSeriesEpisodesLoading] = useState(false)
@@ -58,9 +59,18 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
 
   const hero = data.hero
   const rows = Array.isArray(data.rows) ? data.rows : []
+  const searchQ = seriesSearch.trim().toLowerCase()
+  const filteredRows = rows.map(r => {
+    if (r.type !== 'series' || !searchQ) return r
+    const items = Array.isArray(r.items) ? r.items : []
+    return {
+      ...r,
+      items: items.filter(it => (it.title || '').toLowerCase().includes(searchQ)),
+    }
+  })
   const continueRow = rows.find(r => r.id === 'continue')
   const firstEpisodeId = continueRow?.items?.[0]?.episode_id || 1
-  const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0)
+  const hasAnyItems = filteredRows.some(r => (r.items?.length || 0) > 0)
 
   const openSeriesModal = async (seriesItem) => {
     setSeriesModal(seriesItem)
@@ -112,7 +122,35 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
       )}
 
       <div style={{ marginTop: -80, position: 'relative', zIndex: 2, paddingBottom: 36 }}>
-        {rows.map(row => (
+        <div style={{ padding: '0 48px', marginTop: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <input
+              value={seriesSearch}
+              onChange={e => setSeriesSearch(e.target.value)}
+              placeholder="Search series..."
+              style={{
+                width: 'min(460px, 100%)',
+                background: 'rgba(0,0,0,0.55)',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: '#fff',
+                borderRadius: 999,
+                padding: '10px 14px',
+                fontSize: 14,
+              }}
+            />
+            {seriesSearch && (
+              <button
+                type="button"
+                onClick={() => setSeriesSearch('')}
+                style={{ background: 'none', border: '1px solid #555', color: '#ccc', borderRadius: 999, padding: '8px 12px', cursor: 'pointer' }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        {filteredRows.map(row => (
           <Row
             key={row.id}
             title={row.title}
@@ -214,7 +252,7 @@ function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries, onO
 }
 
 function SeriesEpisodesModal({ series, episodes, loading, message, onClose, onPlayEpisode }) {
-  const heroImage = series.backdrop_url || series.poster_url || '/default-thumbnail.svg'
+  const heroImage = series.thumbnail_url || series.backdrop_url || series.poster_url || '/default-thumbnail.svg'
 
   return (
     <div

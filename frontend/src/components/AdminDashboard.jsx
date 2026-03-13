@@ -22,7 +22,9 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const [videoUploadDesc, setVideoUploadDesc] = useState('')
   const [videoThumbFileById, setVideoThumbFileById] = useState({})
   const [newSeriesTitle, setNewSeriesTitle] = useState('')
+  const [newSeriesSynopsis, setNewSeriesSynopsis] = useState('')
   const [newEpisodeTitle, setNewEpisodeTitle] = useState('')
+  const [newEpisodeSynopsis, setNewEpisodeSynopsis] = useState('')
   const [newEpisodeNumber, setNewEpisodeNumber] = useState('1')
   const [seriesSearch, setSeriesSearch] = useState('')
   const [seriesThumbFile, setSeriesThumbFile] = useState(null)
@@ -182,13 +184,14 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ title: newSeriesTitle, synopsis: '', content_type: 'series' }),
+        body: JSON.stringify({ title: newSeriesTitle, synopsis: newSeriesSynopsis.trim(), content_type: 'series' }),
       })
       const t = await r.text()
       const payload = parseMaybeJson(t)
       if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to create series')
       setUploadMsg(`Series created: ${payload.series?.title}`)
       setNewSeriesTitle('')
+      setNewSeriesSynopsis('')
       await fetchSeriesOverview()
     } catch (e) {
       setUploadMsg(`Create series error: ${e.message}`)
@@ -212,7 +215,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
           season_id: modalSeason.season_id,
           title: newEpisodeTitle,
           episode_number: Number(newEpisodeNumber) || 1,
-          synopsis: '',
+          synopsis: newEpisodeSynopsis.trim(),
           duration_sec: 0,
         }),
       })
@@ -221,6 +224,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
       if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to create episode')
       setUploadMsg(`Episode created: ${payload.episode?.title}`)
       setNewEpisodeTitle('')
+      setNewEpisodeSynopsis('')
       setNewEpisodeNumber('1')
       await fetchSeriesOverview()
     } catch (e) {
@@ -231,6 +235,8 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const editSeries = async (seriesItem) => {
     const nextTitle = window.prompt('Update series title', seriesItem.title)
     if (nextTitle === null) return
+    const nextSynopsis = window.prompt('Update series description', seriesItem.synopsis || '')
+    if (nextSynopsis === null) return
     try {
       const r = await fetch(`/api/catalog/admin/series/${seriesItem.series_id}`, {
         method: 'PUT',
@@ -238,7 +244,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ title: nextTitle }),
+        body: JSON.stringify({ title: nextTitle, synopsis: nextSynopsis }),
       })
       const t = await r.text()
       const payload = parseMaybeJson(t)
@@ -272,6 +278,8 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const editEpisode = async (ep) => {
     const nextTitle = window.prompt('Update episode title', ep.title)
     if (nextTitle === null) return
+    const nextSynopsis = window.prompt('Update episode description', ep.synopsis || '')
+    if (nextSynopsis === null) return
     try {
       const r = await fetch(`/api/catalog/admin/episodes/${ep.episode_id}`, {
         method: 'PUT',
@@ -279,7 +287,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ title: nextTitle }),
+        body: JSON.stringify({ title: nextTitle, synopsis: nextSynopsis }),
       })
       const t = await r.text()
       const payload = parseMaybeJson(t)
@@ -649,6 +657,12 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                   placeholder="New series title"
                   style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 240 }}
                 />
+                <input
+                  value={newSeriesSynopsis}
+                  onChange={e => setNewSeriesSynopsis(e.target.value)}
+                  placeholder="Series description"
+                  style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 320 }}
+                />
                 <button
                   type="button"
                   onClick={createSeries}
@@ -947,6 +961,12 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                   onChange={e => setNewEpisodeTitle(e.target.value)}
                   placeholder="New episode title"
                   style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 240 }}
+                />
+                <input
+                  value={newEpisodeSynopsis}
+                  onChange={e => setNewEpisodeSynopsis(e.target.value)}
+                  placeholder="Episode description"
+                  style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 300 }}
                 />
                 <input
                   type="number"
