@@ -1,20 +1,46 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import VideoPlayer from './components/VideoPlayer.jsx'
 import AdminDashboard from './components/AdminDashboard.jsx'
-
-const VIDEOS = [
-  { id: 1, title: 'Demo Episode 1', subtitle: 'Buffering & CDN Demo', emoji: '🎬' },
-  { id: 2, title: 'Demo Episode 2', subtitle: 'CDN Failover Demo',    emoji: '🎥' },
-]
+import Login from './components/Login.jsx'
+import CatalogHome from './components/CatalogHome.jsx'
 
 export default function App() {
-  const [view,    setView]    = useState('home')  // 'home' | 'player' | 'admin'
-  const [session, setSession] = useState(null)
+  const [auth,     setAuth]     = useState(null)     // null | { token, user }
+  const [view,     setView]     = useState('home')   // 'home' | 'player' | 'admin'
+  const [session,  setSession]  = useState(null)
   const [selVideo, setSelVideo] = useState(null)
 
-  const handlePlay = async (video) => {
+  // Restore session from localStorage on first load
+  useEffect(() => {
+    const stored = localStorage.getItem('auth')
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        setAuth(parsed)
+        setView(parsed.user.role === 'admin' ? 'admin' : 'home')
+      } catch {
+        localStorage.removeItem('auth')
+      }
+    }
+  }, [])
+
+  const handleLogin = (authData) => {
+    localStorage.setItem('auth', JSON.stringify(authData))
+    setAuth(authData)
+    setView(authData.user.role === 'admin' ? 'admin' : 'home')
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('auth')
+    setAuth(null)
+    setView('home')
+    setSession(null)
+    setSelVideo(null)
+  }
+
+  const handlePlayVideo = async (video) => {
     try {
-      const r = await fetch(`/api/playback/start?videoId=${video.id}&clientRegion=dhaka`)
+      const r = await fetch(`/api/playback/start?videoId=${video.id}&clientRegion=dhaka&userId=${auth.user.username}`)
       const data = await r.json()
       setSession(data)
       setSelVideo(video)
@@ -24,6 +50,33 @@ export default function App() {
     }
   }
 
+  const handlePlayEpisode = async (episodeId) => {
+    try {
+      const r = await fetch(`/api/catalog/episodes/${episodeId}/playback`, {
+        headers: { Authorization: `Bearer ${auth.token}` },
+      })
+      const resolved = await r.json()
+      if (!r.ok) throw new Error(resolved.detail || 'Could not resolve episode playback')
+
+      if (!resolved.available) {
+        alert(resolved.message)
+      }
+
+      await handlePlayVideo({
+        id: resolved.video_id,
+        title: `Episode ${episodeId}`,
+        subtitle: resolved.fallback ? 'Demo Fallback' : 'Playable Episode',
+      })
+    } catch (e) {
+      alert(e.message)
+    }
+  }
+
+  // Not logged in → show login page
+  if (!auth) return <Login onLogin={handleLogin} />
+
+  const isAdmin = auth.user.role === 'admin'
+
   return (
     <div style={{ minHeight: '100vh' }}>
       <header style={{
@@ -32,51 +85,51 @@ export default function App() {
         position: 'sticky', top: 0, zIndex: 100,
       }}>
         <h1 style={{ color: '#e50914', fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>
-          NETFLIX DEMO
+          NETFLIX
         </h1>
         <nav style={{ display: 'flex', gap: 20 }}>
           <NavBtn label="Home"       active={view === 'home'}  onClick={() => setView('home')}  />
-          <NavBtn label="Dashboard"  active={view === 'admin'} onClick={() => setView('admin')} />
+          {isAdmin && (
+            <NavBtn label="Dashboard" active={view === 'admin'} onClick={() => setView('admin')} />
+          )}
         </nav>
-        {view === 'player' && (
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+          {view === 'player' && (
+            <button
+              onClick={() => setView('home')}
+              style={{ background: 'none', border: '1px solid #555', color: '#aaa',
+                       padding: '6px 14px', cursor: 'pointer', borderRadius: 4, fontSize: 13 }}>
+              ← Back
+            </button>
+          )}
+          <span style={{ color: '#aaa', fontSize: 13 }}>
+            {auth.user.username}
+            {isAdmin && (
+              <span style={{ color: '#e50914', marginLeft: 6, fontSize: 10, fontWeight: 700,
+                             background: 'rgba(229,9,20,0.15)', padding: '2px 6px', borderRadius: 3,
+                             border: '1px solid rgba(229,9,20,0.4)' }}>
+                ADMIN
+              </span>
+            )}
+          </span>
           <button
-            onClick={() => setView('home')}
-            style={{ marginLeft: 'auto', background: 'none', border: '1px solid #555',
-                     color: '#aaa', padding: '6px 14px', cursor: 'pointer', borderRadius: 4, fontSize: 13 }}>
-            ← Back
+            onClick={handleLogout}
+            style={{ background: 'none', border: '1px solid #555', color: '#aaa',
+                     padding: '6px 14px', cursor: 'pointer', borderRadius: 4, fontSize: 13 }}>
+            Sign Out
           </button>
-        )}
+        </div>
       </header>
 
       {view === 'home' && (
-        <div style={{ padding: '48px 40px' }}>
-          <h2 style={{ marginBottom: 8,  fontSize: 13, color: '#aaa', letterSpacing: 1 }}>
-            CONTINUE WATCHING
-          </h2>
-          <div style={{ display: 'flex', gap: 16, marginTop: 16 }}>
-            {VIDEOS.map(v => (
-              <VideoCard key={v.id} video={v} onPlay={() => handlePlay(v)} />
-            ))}
-          </div>
-
-          <div style={{ marginTop: 48 }}>
-            <h2 style={{ marginBottom: 16, fontSize: 13, color: '#aaa', letterSpacing: 1 }}>
-              SYSTEM INFO
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-              <InfoCard title="BBA Algorithm" desc="Buffer-Based Adaptation from Stanford/Netflix 2014 paper. Quality is driven by buffer level, not bandwidth." />
-              <InfoCard title="CDN Simulation" desc="3 Docker edge nodes (Dhaka, Chittagong, Sylhet). Each caches segments, sends heartbeats, reports health." />
-              <InfoCard title="Preloading" desc="At 90% of episode, next episode chunks are prefetched to CDN. Instant auto-play with no spinner." />
-            </div>
-          </div>
-        </div>
+        <CatalogHome token={auth.token} onPlayEpisode={handlePlayEpisode} />
       )}
 
       {view === 'player' && session && (
         <VideoPlayer session={session} video={selVideo} />
       )}
 
-      {view === 'admin' && <AdminDashboard />}
+      {view === 'admin' && <AdminDashboard token={auth.token} />}
     </div>
   )
 }
@@ -92,43 +145,5 @@ function NavBtn({ label, active, onClick }) {
     }}>
       {label}
     </button>
-  )
-}
-
-function VideoCard({ video, onPlay }) {
-  const [hover, setHover] = useState(false)
-  return (
-    <div
-      onClick={onPlay}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        width: 220, background: '#1a1a1a', borderRadius: 6, cursor: 'pointer',
-        transform: hover ? 'scale(1.05)' : 'scale(1)',
-        transition: 'transform 0.2s',
-        border: hover ? '1px solid #e50914' : '1px solid transparent',
-        overflow: 'hidden',
-      }}
-    >
-      <div style={{
-        height: 124, background: '#2a2a2a',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 48,
-      }}>
-        {video.emoji}
-      </div>
-      <div style={{ padding: '10px 12px' }}>
-        <div style={{ fontWeight: 600, fontSize: 14 }}>{video.title}</div>
-        <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>{video.subtitle}</div>
-      </div>
-    </div>
-  )
-}
-
-function InfoCard({ title, desc }) {
-  return (
-    <div style={{ background: '#1a1a1a', borderRadius: 6, padding: 16 }}>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>{title}</div>
-      <div style={{ fontSize: 12, color: '#666', lineHeight: 1.6 }}>{desc}</div>
-    </div>
   )
 }

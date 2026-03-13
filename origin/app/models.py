@@ -1,6 +1,80 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ARRAY, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, ARRAY, ForeignKey, Text, Boolean
 from datetime import datetime
 from .database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    username      = Column(String(64), unique=True, nullable=False)
+    email         = Column(String(256), unique=True, nullable=False)
+    password_hash = Column(String(256), nullable=False)
+    role          = Column(String(16), default="user")  # "user" | "admin"
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
+
+class Series(Base):
+    __tablename__ = "series"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    tmdb_id       = Column(Integer, nullable=True)
+    title         = Column(String(255), nullable=False)
+    synopsis      = Column(Text, default="")
+    content_type  = Column(String(16), default="series")  # series | movie
+    year          = Column(Integer, nullable=True)
+    maturity      = Column(String(16), default="TV-14")
+    genres        = Column(ARRAY(String), default=[])
+    poster_url    = Column(String(512), nullable=True)
+    backdrop_url  = Column(String(512), nullable=True)
+    logo_url      = Column(String(512), nullable=True)
+    popularity    = Column(Float, default=0.0)
+    featured      = Column(Boolean, default=False)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
+
+class Season(Base):
+    __tablename__ = "seasons"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    series_id     = Column(Integer, ForeignKey("series.id"), nullable=False)
+    season_number = Column(Integer, nullable=False)
+    title         = Column(String(255), nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
+
+class Episode(Base):
+    __tablename__ = "episodes"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    series_id      = Column(Integer, ForeignKey("series.id"), nullable=False)
+    season_id      = Column(Integer, ForeignKey("seasons.id"), nullable=False)
+    episode_number = Column(Integer, nullable=False)
+    title          = Column(String(255), nullable=False)
+    synopsis       = Column(Text, default="")
+    duration_sec   = Column(Integer, default=0)
+    video_id       = Column(Integer, ForeignKey("videos.id"), nullable=True)
+    playable       = Column(Boolean, default=False)
+    demo_fallback_video_id = Column(Integer, ForeignKey("videos.id"), nullable=True)
+    created_at     = Column(DateTime, default=datetime.utcnow)
+
+
+class MediaTrack(Base):
+    __tablename__ = "media_tracks"
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    episode_id  = Column(Integer, ForeignKey("episodes.id"), nullable=False)
+    track_type  = Column(String(16), nullable=False)  # audio | subtitle
+    language    = Column(String(32), nullable=False)
+    label       = Column(String(64), nullable=True)
+    codec       = Column(String(32), nullable=True)
+    is_default  = Column(Boolean, default=False)
+    created_at  = Column(DateTime, default=datetime.utcnow)
+
+
+class WatchProgress(Base):
+    __tablename__ = "watch_progress"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    user_id          = Column(Integer, ForeignKey("users.id"), nullable=False)
+    episode_id       = Column(Integer, ForeignKey("episodes.id"), nullable=False)
+    playhead_seconds = Column(Float, default=0.0)
+    completed        = Column(Boolean, default=False)
+    updated_at       = Column(DateTime, default=datetime.utcnow)
 
 
 class Video(Base):

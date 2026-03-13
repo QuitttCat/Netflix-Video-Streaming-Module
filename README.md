@@ -17,6 +17,41 @@ This starts 7 services: PostgreSQL, Redis, Origin Server (FastAPI), 3 CDN Edge N
 
 Open **http://localhost** in your browser.
 
+## Seed 100 Popular Movies (TMDB)
+
+Set your TMDB API key in your shell, restart origin, then run the seed script:
+
+```bash
+export TMDB_API_KEY=your_tmdb_api_key
+docker compose up -d --build origin
+
+# import top 100 popular movies into series/seasons/episodes/media_tracks
+docker exec netflix_origin python -m app.scripts.seed_tmdb_movies --limit 100
+
+# import movies + popular TV series (recommended)
+docker exec netflix_origin python -m app.scripts.seed_tmdb_movies \
+  --limit 100 \
+  --series-limit 40 \
+  --max-seasons-per-series 2 \
+  --max-episodes-per-season 10
+```
+
+Optional (clear old movie rows first):
+
+```bash
+docker exec netflix_origin python -m app.scripts.seed_tmdb_movies --limit 100 --reset-movies
+
+# optional: also reset old imported series rows before re-import
+docker exec netflix_origin python -m app.scripts.seed_tmdb_movies \
+  --limit 100 --series-limit 40 --reset-movies --reset-series
+```
+
+### One-click from Admin Dashboard
+
+Login as admin and open Dashboard. In **Episode Asset Manager**, click **Seed Catalog**.
+
+That one click starts a background seed job (movies + series + episodes) and shows live status/result.
+
 ## How We Tested Video Streaming
 
 We grabbed a sample video (Big Buck Bunny, Creative Commons) and loaded it into the system:

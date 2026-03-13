@@ -3,6 +3,30 @@ from typing import Optional, List
 from datetime import datetime
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    email: str
+    role: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserOut
+
+
 class CDNNodeRegister(BaseModel):
     node_id:  str
     name:     str

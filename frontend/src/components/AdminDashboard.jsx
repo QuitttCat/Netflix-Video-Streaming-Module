@@ -1,9 +1,59 @@
 import { useEffect, useRef, useState } from 'react'
 
-export default function AdminDashboard() {
+export default function AdminDashboard({ token }) {
   const [data,      setData]      = useState(null)
   const [connected, setConnected] = useState(false)
+  const [series, setSeries] = useState([])
+  const [selectedSeries, setSelectedSeries] = useState(null)
+  const [selectedSeason, setSelectedSeason] = useState(null)
+  const [modalSeries, setModalSeries] = useState(null)
+  const [modalSeason, setModalSeason] = useState(null)
+  const [uploadMsg, setUploadMsg] = useState('')
+  const [fileByEpisode, setFileByEpisode] = useState({})
+  const [uploadingEpisodeId, setUploadingEpisodeId] = useState(null)
+  const [seedStatus, setSeedStatus] = useState(null)
+  const [seedMsg, setSeedMsg] = useState('')
   const wsRef = useRef(null)
+
+  const fetchSeriesOverview = async () => {
+    try {
+      const r = await fetch('/api/catalog/admin/series-overview', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payloadText = await r.text()
+      const payload = parseMaybeJson(payloadText)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to load series overview')
+      const items = payload.items || []
+      setSeries(items)
+
+      if (items.length > 0) {
+        const nextSeries = selectedSeries
+          ? (items.find(x => x.series_id === selectedSeries.series_id) || items[0])
+          : (items.find(x => x.missing_episodes > 0) || items[0])
+        setSelectedSeries(nextSeries)
+
+        const nextSeason = selectedSeason
+          ? (nextSeries.seasons?.find(x => x.season_id === selectedSeason.season_id) || nextSeries.seasons?.[0] || null)
+          : (nextSeries.seasons?.[0] || null)
+        setSelectedSeason(nextSeason)
+
+        if (modalSeries) {
+          const refreshedModalSeries = items.find(x => x.series_id === modalSeries.series_id) || null
+          setModalSeries(refreshedModalSeries)
+          if (refreshedModalSeries) {
+            const refreshedModalSeason = modalSeason
+              ? (refreshedModalSeries.seasons?.find(x => x.season_id === modalSeason.season_id) || refreshedModalSeries.seasons?.[0] || null)
+              : (refreshedModalSeries.seasons?.[0] || null)
+            setModalSeason(refreshedModalSeason)
+          } else {
+            setModalSeason(null)
+          }
+        }
+      }
+    } catch (e) {
+      setUploadMsg(`Series overview error: ${e.message}`)
+    }
+  }
 
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -17,6 +67,108 @@ export default function AdminDashboard() {
 
     return () => ws.close()
   }, [])
+
+  useEffect(() => {
+    fetchSeriesOverview()
+    fetchSeedStatus()
+  }, [])
+
+  useEffect(() => {
+    if (!seedStatus?.running) return
+    const t = setInterval(fetchSeedStatus, 2000)
+    return () => clearInterval(t)
+  }, [seedStatus?.running])
+
+  useEffect(() => {
+    if (seedStatus?.running === false && seedStatus?.success === true) {
+      fetchSeriesOverview()
+    }
+  }, [seedStatus?.running, seedStatus?.success])
+
+  const selectSeries = (item) => {
+    setSelectedSeries(item)
+    setSelectedSeason(item.seasons?.[0] || null)
+  }
+
+  const uploadEpisodeVideo = async (episode) => {
+    setUploadMsg('')
+    const file = fileByEpisode[episode.episode_id]
+    if (!file) {
+      setUploadMsg(`Select a video file for S${modalSeason?.season_number}:E${episode.episode_number}`)
+      return
+    }
+    try {
+      setUploadingEpisodeId(episode.episode_id)
+      const form = new FormData()
+      form.append('episode_id', String(episode.episode_id))
+      form.append('title', `Episode ${episode.episode_number}`)
+      form.append('description', 'Uploaded from admin dashboard')
+      form.append('file', file)
+
+      const r = await fetch(`/api/catalog/admin/episodes/${episode.episode_id}/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      })
+      const payloadText = await r.text()
+      const payload = parseMaybeJson(payloadText)
+      if (!r.ok) throw new Error(payload.detail || payloadText || 'Upload failed')
+
+      setUploadMsg(`Uploaded ${episode.title} → video_id ${payload.video_id}. Encode this video to make playback ready.`)
+      setFileByEpisode(prev => {
+        const copy = { ...prev }
+        delete copy[episode.episode_id]
+        return copy
+      })
+      await fetchSeriesOverview()
+    } catch (err) {
+      setUploadMsg(`Upload error: ${err.message}`)
+    } finally {
+      setUploadingEpisodeId(null)
+    }
+  }
+
+  const fetchSeedStatus = async () => {
+    try {
+      const r = await fetch('/api/catalog/admin/seed-catalog-status', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const txt = await r.text()
+      const payload = parseMaybeJson(txt)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to fetch seed status')
+      setSeedStatus(payload)
+    } catch (e) {
+      setSeedMsg(`Seed status error: ${e.message}`)
+    }
+  }
+
+  const startSeedCatalog = async () => {
+    setSeedMsg('')
+    try {
+      const r = await fetch('/api/catalog/admin/seed-catalog', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          movie_limit: 100,
+          series_limit: 40,
+          max_seasons_per_series: 2,
+          max_episodes_per_season: 10,
+          reset_movies: true,
+          reset_series: true,
+        }),
+      })
+      const txt = await r.text()
+      const payload = parseMaybeJson(txt)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to start seed job')
+      setSeedMsg('Catalog seed started.')
+      await fetchSeedStatus()
+    } catch (e) {
+      setSeedMsg(`Seed start error: ${e.message}`)
+    }
+  }
 
   return (
     <div style={{ padding: '32px 40px' }}>
@@ -33,75 +185,247 @@ export default function AdminDashboard() {
         )}
       </div>
 
-      {!data ? (
-        <div style={{ color: '#555', textAlign: 'center', marginTop: 80 }}>
-          Waiting for data… Start streaming a video to see live metrics.
+      {/* Summary */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 24 }}>
+        <StatCard label="Active Sessions" value={data?.active_sessions ?? 0} color="#46d369" />
+        <StatCard label="CDN Nodes" value={data?.cdn_nodes?.length ?? 0} color="#e50914" />
+        <StatCard label="Buffer Events" value={data?.recent_events?.length ?? 0} color="#f5a623" />
+      </div>
+
+      {!data && (
+        <div style={{ color: '#555', textAlign: 'center', marginTop: 8, marginBottom: 22 }}>
+          Live telemetry not connected yet. Catalog tools below are still available.
         </div>
-      ) : (
-        <>
-          {/* Summary */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 24 }}>
-            <StatCard label="Active Sessions" value={data.active_sessions}    color="#46d369" />
-            <StatCard label="CDN Nodes"       value={data.cdn_nodes?.length ?? 0} color="#e50914" />
-            <StatCard label="Buffer Events"   value={data.recent_events?.length ?? 0} color="#f5a623" />
+      )}
+
+      {/* CDN nodes */}
+      <Section title="CDN Node Health">
+        {data?.cdn_nodes?.length > 0 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            {data.cdn_nodes.map(n => (
+              <CDNCard key={n.id} node={n} />
+            ))}
           </div>
+        ) : (
+          <Empty msg="No CDN node telemetry yet." />
+        )}
+      </Section>
 
-          {/* CDN nodes */}
-          <Section title="CDN Node Health">
-            {data.cdn_nodes?.length > 0 ? (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                {data.cdn_nodes.map(n => (
-                  <CDNCard key={n.id} node={n} />
+      {/* Active sessions */}
+      <Section title="Active Sessions">
+        {data?.sessions?.length > 0 ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                {['Session', 'Video', 'Quality', 'CDN Node'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', padding: '8px 12px',
+                                       color: '#555', borderBottom: '1px solid #2a2a2a' }}>
+                    {h}
+                  </th>
                 ))}
-              </div>
-            ) : (
-              <Empty msg="No CDN nodes registered. Nodes register automatically on startup." />
-            )}
-          </Section>
+              </tr>
+            </thead>
+            <tbody>
+              {data.sessions.map(s => (
+                <tr key={s.id} style={{ borderBottom: '1px solid #1e1e1e' }}>
+                  <td style={{ padding: '8px 12px' }}>{s.id}</td>
+                  <td style={{ padding: '8px 12px' }}>Video {s.video_id}</td>
+                  <td style={{ padding: '8px 12px', color: '#46d369' }}>{s.quality}</td>
+                  <td style={{ padding: '8px 12px', color: '#aaa' }}>{s.cdn_node_id ?? 'origin'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <Empty msg="No active sessions." />
+        )}
+      </Section>
 
-          {/* Active sessions */}
-          <Section title="Active Sessions">
-            {data.sessions?.length > 0 ? (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      {/* Buffer events */}
+      <Section title="Recent Buffer Events">
+        {data?.recent_events?.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {data.recent_events.map((e, i) => (
+              <BufferEventRow key={i} event={e} />
+            ))}
+          </div>
+        ) : (
+          <Empty msg="No buffer events yet." />
+        )}
+      </Section>
+
+      <Section title="Episode Asset Manager">
+            <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 14 }}>
+              <div style={{ marginBottom: 14, padding: 10, border: '1px solid #2a2a2a', borderRadius: 6, background: '#111' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                  <div style={{ fontSize: 12, color: '#bbb' }}>
+                    One-click catalog seed (100 movies + 40 series + episodes)
+                  </div>
+                  <button
+                    onClick={startSeedCatalog}
+                    disabled={seedStatus?.running}
+                    style={{
+                      background: seedStatus?.running ? '#6a0a10' : '#e50914',
+                      color: '#fff', border: 'none', borderRadius: 4,
+                      padding: '7px 12px', cursor: seedStatus?.running ? 'not-allowed' : 'pointer',
+                      fontSize: 12, fontWeight: 700,
+                    }}
+                  >
+                    {seedStatus?.running ? 'Seeding…' : 'Seed Catalog'}
+                  </button>
+                </div>
+
+                {(seedStatus || seedMsg) && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: '#999', lineHeight: 1.6 }}>
+                    {seedMsg && <div>{seedMsg}</div>}
+                    {seedStatus?.started_at && <div>Started: {new Date(seedStatus.started_at).toLocaleString()}</div>}
+                    {seedStatus?.finished_at && <div>Finished: {new Date(seedStatus.finished_at).toLocaleString()}</div>}
+                    {seedStatus?.success === true && <div style={{ color: '#46d369' }}>Success: {seedStatus.output || 'done'}</div>}
+                    {seedStatus?.success === false && <div style={{ color: '#e50914' }}>Error: {seedStatus.error || 'failed'}</div>}
+                    {seedStatus?.running && <div style={{ color: '#f5a623' }}>Running in background...</div>}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: '#aaa' }}>Click a title with missing videos to open episode upload popup.</div>
+                <button type="button" onClick={fetchSeriesOverview} style={{ background: 'transparent', color: '#aaa', border: '1px solid #444', borderRadius: 4, padding: '7px 10px', cursor: 'pointer' }}>
+                  Refresh
+                </button>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 10, marginBottom: 12 }}>
+                {series.filter(x => x.missing_episodes > 0).map(sr => {
+                  const active = selectedSeries?.series_id === sr.series_id
+                  return (
+                    <button
+                      key={sr.series_id}
+                      onClick={() => {
+                        selectSeries(sr)
+                        setModalSeries(sr)
+                        setModalSeason(sr.seasons?.[0] || null)
+                      }}
+                      style={{
+                        textAlign: 'left', background: active ? '#2b1113' : '#111', color: '#fff',
+                        border: active ? '1px solid #e50914' : '1px solid #2a2a2a', borderRadius: 6,
+                        padding: 10, cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 700 }}>{sr.title}</div>
+                      <div style={{ fontSize: 11, color: '#999', marginTop: 5 }}>
+                        {sr.is_movie ? 'Movie' : 'Series'} • Missing: <span style={{ color: sr.missing_episodes > 0 ? '#e50914' : '#46d369' }}>{sr.missing_episodes}</span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {uploadMsg && <div style={{ marginTop: 10, fontSize: 12, color: '#f5a623' }}>{uploadMsg}</div>}
+            </div>
+      </Section>
+
+      {modalSeries && (
+        <div
+          onClick={() => { setModalSeries(null); setModalSeason(null) }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 2000,
+            background: 'rgba(0,0,0,0.72)',
+            display: 'flex', justifyContent: 'center', alignItems: 'center',
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 'min(1100px, 96vw)',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              background: '#141414',
+              border: '1px solid #2a2a2a',
+              borderRadius: 10,
+              padding: 18,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{modalSeries.title}</div>
+                <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                  {modalSeries.is_movie ? 'Movie' : 'Series'} • Missing episodes: {modalSeries.missing_episodes}
+                </div>
+              </div>
+              <button
+                onClick={() => { setModalSeries(null); setModalSeason(null) }}
+                style={{ background: 'none', border: '1px solid #444', color: '#aaa', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {modalSeries.seasons?.map(ss => (
+                <button
+                  key={ss.season_id}
+                  onClick={() => setModalSeason(ss)}
+                  style={{
+                    borderRadius: 4,
+                    border: modalSeason?.season_id === ss.season_id ? '1px solid #e50914' : '1px solid #333',
+                    background: modalSeason?.season_id === ss.season_id ? '#2b1113' : '#111',
+                    color: modalSeason?.season_id === ss.season_id ? '#fff' : '#aaa',
+                    fontSize: 12,
+                    padding: '6px 10px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Season {ss.season_number}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ maxHeight: 420, overflow: 'auto', borderTop: '1px solid #2a2a2a', paddingTop: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr>
-                    {['Session', 'Video', 'Quality', 'CDN Node'].map(h => (
-                      <th key={h} style={{ textAlign: 'left', padding: '8px 12px',
-                                           color: '#555', borderBottom: '1px solid #2a2a2a' }}>
-                        {h}
-                      </th>
+                    {['Ep', 'Title', 'Status', 'Select Video', 'Action'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', color: '#777', padding: '6px 8px', borderBottom: '1px solid #2a2a2a' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {data.sessions.map(s => (
-                    <tr key={s.id} style={{ borderBottom: '1px solid #1e1e1e' }}>
-                      <td style={{ padding: '8px 12px' }}>{s.id}</td>
-                      <td style={{ padding: '8px 12px' }}>Video {s.video_id}</td>
-                      <td style={{ padding: '8px 12px', color: '#46d369' }}>{s.quality}</td>
-                      <td style={{ padding: '8px 12px', color: '#aaa' }}>{s.cdn_node_id ?? 'origin'}</td>
+                  {(modalSeason?.episodes || []).map(ep => (
+                    <tr key={ep.episode_id}>
+                      <td style={{ padding: '8px' }}>{ep.episode_number}</td>
+                      <td style={{ padding: '8px' }}>{ep.title}</td>
+                      <td style={{ padding: '8px', color: ep.missing_video ? '#e50914' : '#46d369' }}>
+                        {ep.missing_video ? 'Missing' : `Ready (video ${ep.video_id})`}
+                      </td>
+                      <td style={{ padding: '8px' }}>
+                        <input
+                          type="file"
+                          accept="video/mp4"
+                          onChange={e => setFileByEpisode(prev => ({ ...prev, [ep.episode_id]: e.target.files?.[0] || null }))}
+                          style={{ color: '#aaa' }}
+                        />
+                      </td>
+                      <td style={{ padding: '8px' }}>
+                        <button
+                          onClick={() => uploadEpisodeVideo(ep)}
+                          disabled={uploadingEpisodeId === ep.episode_id}
+                          style={{
+                            background: '#e50914', color: '#fff', border: 'none', borderRadius: 4,
+                            padding: '7px 10px', cursor: 'pointer',
+                            opacity: uploadingEpisodeId === ep.episode_id ? 0.6 : 1,
+                          }}
+                        >
+                          {uploadingEpisodeId === ep.episode_id ? 'Uploading + Encoding…' : 'Upload'}
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            ) : (
-              <Empty msg="No active sessions. Click Play on a video." />
-            )}
-          </Section>
-
-          {/* Buffer events */}
-          <Section title="Recent Buffer Events">
-            {data.recent_events?.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {data.recent_events.map((e, i) => (
-                  <BufferEventRow key={i} event={e} />
-                ))}
-              </div>
-            ) : (
-              <Empty msg="No buffer events yet." />
-            )}
-          </Section>
-        </>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -183,4 +507,13 @@ function LoadBar({ value }) {
       <span style={{ color: '#fff' }}>{value.toFixed(0)}%</span>
     </span>
   )
+}
+
+function parseMaybeJson(text) {
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { raw: text }
+  }
 }
