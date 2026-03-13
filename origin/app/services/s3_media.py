@@ -106,6 +106,27 @@ class S3MediaService:
     def head_object(self, key: str) -> dict:
         return self._s3.head_object(Bucket=self.bucket_name, Key=key)
 
+    def delete_object(self, key: str) -> None:
+        self._s3.delete_object(Bucket=self.bucket_name, Key=key)
+
+    def delete_prefix(self, prefix: str) -> int:
+        normalized = (prefix or "").strip("/")
+        if not normalized:
+            return 0
+
+        deleted = 0
+        paginator = self._s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket_name, Prefix=normalized):
+            contents = page.get("Contents", [])
+            if not contents:
+                continue
+
+            keys = [{"Key": item["Key"]} for item in contents]
+            self._s3.delete_objects(Bucket=self.bucket_name, Delete={"Objects": keys, "Quiet": True})
+            deleted += len(keys)
+
+        return deleted
+
     def object_url(self, key: str) -> str:
         if self.endpoint_url:
             return f"{self.endpoint_url.rstrip('/')}/{self.bucket_name}/{key}"

@@ -142,9 +142,11 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh' }}>
       <header style={{
-        padding: '14px 40px', background: 'rgba(0,0,0,0.85)',
+        padding: '14px 40px', background: 'linear-gradient(to bottom, rgba(0,0,0,0.86), rgba(0,0,0,0.48))',
         display: 'flex', alignItems: 'center', gap: 32,
         position: 'sticky', top: 0, zIndex: 100,
+        backdropFilter: 'blur(6px)',
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
       }}>
         <h1 style={{ color: '#e50914', fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>
           NETFLIX

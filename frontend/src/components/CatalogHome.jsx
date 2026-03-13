@@ -77,7 +77,7 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
   const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0) || uploads.length > 0
 
   return (
-    <div>
+    <div className="home-shell">
       {hero && (
         <HeroBanner hero={hero} onPlay={() => onPlayEpisode(firstEpisodeId)} />
       )}
@@ -124,7 +124,7 @@ function HeroBanner({ hero, onPlay }) {
 
   return (
     <div style={{
-      height: 560,
+      minHeight: 620,
       backgroundImage: withImage,
       backgroundSize: 'cover',
       backgroundPosition: 'center top',
@@ -133,22 +133,18 @@ function HeroBanner({ hero, onPlay }) {
       padding: '0 48px 90px',
       boxSizing: 'border-box',
     }}>
-      <div style={{ maxWidth: 520 }}>
-        <div style={{ fontSize: 44, fontWeight: 800, marginBottom: 16, textShadow: '0 2px 12px rgba(0,0,0,0.5)' }}>
+      <div className="hero-content" style={{ maxWidth: 620 }}>
+        <div style={{ fontSize: 54, fontWeight: 800, marginBottom: 16, textShadow: '0 2px 20px rgba(0,0,0,0.65)' }}>
           {hero.title}
         </div>
-        <div style={{ color: '#d2d2d2', lineHeight: 1.5, marginBottom: 20, fontSize: 15 }}>
+        <div style={{ color: '#d2d2d2', lineHeight: 1.6, marginBottom: 20, fontSize: 17, maxWidth: 560 }}>
           {hero.synopsis}
         </div>
-        <button
-          onClick={onPlay}
-          style={{
-            background: '#fff', color: '#111', border: 'none', borderRadius: 4,
-            padding: '10px 26px', fontWeight: 700, fontSize: 16, cursor: 'pointer',
-          }}
-        >
-          ▶ Play Demo Episode
-        </button>
+
+        <div className="hero-actions">
+          <button className="btn-primary" onClick={onPlay}>▶ Play</button>
+          <button className="btn-secondary" onClick={onPlay}>ⓘ More Info</button>
+        </div>
       </div>
     </div>
   )
@@ -158,8 +154,8 @@ function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries }) {
   const list = Array.isArray(items) ? items : []
   return (
     <div style={{ padding: '0 48px', marginTop: 28 }}>
-      <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>{title}</div>
-      <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 10 }}>
+      <div className="nf-row-title">{title}</div>
+      <div className="nf-row-scroll">
         {list.length === 0 && (
           <div style={{ color: '#777', fontSize: 13, padding: '10px 2px' }}>
             No items available.
@@ -192,29 +188,20 @@ function Card({ item, onClick, clickable }) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onClick={clickable ? onClick : undefined}
-      style={{
-        minWidth: 220,
-        width: 220,
-        borderRadius: 6,
-        overflow: 'hidden',
-        cursor: clickable ? 'pointer' : 'default',
-        background: '#222',
-        transform: hover ? 'scale(1.07)' : 'scale(1)',
-        transition: 'transform 0.18s ease',
-      }}
+      className="nf-card"
+      style={{ cursor: clickable ? 'pointer' : 'default', transform: hover ? 'scale(1.08)' : 'scale(1)' }}
     >
       <div
+        className="nf-card-media"
         style={{
-          height: 124,
           backgroundImage: imageUrl
             ? `url(${imageUrl})`
             : 'linear-gradient(120deg, #363636 0%, #222 100%)',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          position: 'relative',
           backgroundColor: '#333',
         }}
       >
+        <div className="nf-card-overlay-play"><span>▶</span></div>
+
         {!imageUrl && (
           <div style={{
             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -233,9 +220,9 @@ function Card({ item, onClick, clickable }) {
           </span>
         )}
       </div>
-      <div style={{ padding: 10 }}>
-        <div style={{ fontWeight: 700, fontSize: 13 }}>{item.title}</div>
-        <div style={{ fontSize: 12, color: '#9a9a9a', marginTop: 4, minHeight: 18 }}>
+      <div style={{ padding: 12 }}>
+        <div style={{ fontWeight: 700, fontSize: 13.5 }}>{item.title}</div>
+        <div style={{ fontSize: 13, color: '#9a9a9a', marginTop: 5, minHeight: 18 }}>
           {item.subtitle || (item.duration_seconds ? `${item.duration_seconds}s` : `${item.year || ''} ${item.maturity || ''}`)}
         </div>
       </div>

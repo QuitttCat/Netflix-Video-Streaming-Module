@@ -5,13 +5,13 @@ from datetime import datetime
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from ..auth import get_current_user, require_admin
 from ..database import get_db
-from ..models import Series, Season, Episode, MediaTrack, User, Video
+from ..models import Series, Season, Episode, MediaTrack, User, Video, WatchProgress
 from ..services.s3_media import S3MediaService
 from ..services.video_packaging import (
     build_video_hierarchy_prefix,
@@ -39,6 +39,40 @@ class SeedCatalogRequest(BaseModel):
     max_episodes_per_season: int = 10
     reset_movies: bool = True
     reset_series: bool = True
+
+
+class SeriesCreateRequest(BaseModel):
+    title: str
+    synopsis: str = ""
+    content_type: str = "series"
+    year: int | None = None
+    maturity: str = "TV-14"
+
+
+class SeriesUpdateRequest(BaseModel):
+    title: str | None = None
+    synopsis: str | None = None
+    year: int | None = None
+    maturity: str | None = None
+    poster_url: str | None = None
+    backdrop_url: str | None = None
+    featured: bool | None = None
+
+
+class EpisodeCreateRequest(BaseModel):
+    season_id: int
+    title: str
+    episode_number: int
+    synopsis: str = ""
+    duration_sec: int = 0
+
+
+class EpisodeUpdateRequest(BaseModel):
+    title: str | None = None
+    synopsis: str | None = None
+    duration_sec: int | None = None
+    playable: bool | None = None
+    video_id: int | None = None
 
 
 @router.get("/home")
@@ -256,6 +290,194 @@ async def admin_missing_videos(db: AsyncSession = Depends(get_db), admin: User =
             for e, s, se in items
         ]
     }
+
+
+@router.post("/admin/series")
+async def admin_create_series(
+    payload: SeriesCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    series = Series(
+        title=payload.title,
+        synopsis=payload.synopsis,
+        content_type=payload.content_type,
+        year=payload.year,
+        maturity=payload.maturity,
+        featured=False,
+        genres=[],
+    )
+    db.add(series)
+    await db.flush()
+
+    season = Season(series_id=series.id, season_number=1, title="Season 1")
+    db.add(season)
+    await db.commit()
+    await db.refresh(series)
+    return {"ok": True, "series": serialize_series(series), "default_season_id": season.id}
+
+
+@router.put("/admin/series/{series_id}")
+async def admin_update_series(
+    series_id: int,
+    payload: SeriesUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Series).where(Series.id == series_id))
+    series = result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    if payload.title is not None:
+        series.title = payload.title
+    if payload.synopsis is not None:
+        series.synopsis = payload.synopsis
+    if payload.year is not None:
+        series.year = payload.year
+    if payload.maturity is not None:
+        series.maturity = payload.maturity
+    if payload.poster_url is not None:
+        series.poster_url = payload.poster_url
+    if payload.backdrop_url is not None:
+        series.backdrop_url = payload.backdrop_url
+    if payload.featured is not None:
+        series.featured = payload.featured
+
+    await db.commit()
+    await db.refresh(series)
+    return {"ok": True, "series": serialize_series(series)}
+
+
+@router.delete("/admin/series/{series_id}")
+async def admin_delete_series(
+    series_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Series).where(Series.id == series_id))
+    series = result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    seasons_result = await db.execute(select(Season).where(Season.series_id == series_id))
+    seasons = seasons_result.scalars().all()
+    season_ids = [s.id for s in seasons]
+
+    episodes_result = await db.execute(select(Episode).where(Episode.series_id == series_id))
+    episodes = episodes_result.scalars().all()
+    episode_ids = [e.id for e in episodes]
+
+    if episode_ids:
+        await db.execute(delete(WatchProgress).where(WatchProgress.episode_id.in_(episode_ids)))
+        await db.execute(delete(MediaTrack).where(MediaTrack.episode_id.in_(episode_ids)))
+        await db.execute(delete(Episode).where(Episode.id.in_(episode_ids)))
+
+    if season_ids:
+        await db.execute(delete(Season).where(Season.id.in_(season_ids)))
+
+    await db.execute(delete(Series).where(Series.id == series_id))
+    await db.commit()
+
+    return {"ok": True, "series_id": series_id, "deleted_episodes": len(episode_ids)}
+
+
+@router.post("/admin/series/{series_id}/episodes")
+async def admin_create_episode(
+    series_id: int,
+    payload: EpisodeCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    series_result = await db.execute(select(Series).where(Series.id == series_id))
+    series = series_result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    season_result = await db.execute(
+        select(Season).where(Season.id == payload.season_id, Season.series_id == series_id)
+    )
+    season = season_result.scalar_one_or_none()
+    if not season:
+        raise HTTPException(status_code=404, detail="Season not found")
+
+    episode = Episode(
+        series_id=series_id,
+        season_id=payload.season_id,
+        episode_number=payload.episode_number,
+        title=payload.title,
+        synopsis=payload.synopsis,
+        duration_sec=payload.duration_sec,
+        playable=False,
+    )
+    db.add(episode)
+    await db.commit()
+    await db.refresh(episode)
+
+    return {
+        "ok": True,
+        "episode": {
+            "episode_id": episode.id,
+            "season_id": episode.season_id,
+            "episode_number": episode.episode_number,
+            "title": episode.title,
+        },
+    }
+
+
+@router.put("/admin/episodes/{episode_id}")
+async def admin_update_episode(
+    episode_id: int,
+    payload: EpisodeUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Episode).where(Episode.id == episode_id))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    if payload.title is not None:
+        episode.title = payload.title
+    if payload.synopsis is not None:
+        episode.synopsis = payload.synopsis
+    if payload.duration_sec is not None:
+        episode.duration_sec = payload.duration_sec
+    if payload.playable is not None:
+        episode.playable = payload.playable
+    if payload.video_id is not None:
+        episode.video_id = payload.video_id
+
+    await db.commit()
+    await db.refresh(episode)
+    return {
+        "ok": True,
+        "episode": {
+            "episode_id": episode.id,
+            "title": episode.title,
+            "playable": episode.playable,
+            "video_id": episode.video_id,
+        },
+    }
+
+
+@router.delete("/admin/episodes/{episode_id}")
+async def admin_delete_episode(
+    episode_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Episode).where(Episode.id == episode_id))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    await db.execute(delete(WatchProgress).where(WatchProgress.episode_id == episode_id))
+    await db.execute(delete(MediaTrack).where(MediaTrack.episode_id == episode_id))
+    await db.execute(delete(Episode).where(Episode.id == episode_id))
+    await db.commit()
+
+    return {"ok": True, "episode_id": episode_id}
 
 
 @router.post("/admin/upload-episode-video")

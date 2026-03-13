@@ -1,0 +1,200 @@
+:root {
+  --nf-bg: #141414;
+  --nf-surface: #1a1a1a;
+  --nf-surface-soft: #202020;
+  --nf-text: #ffffff;
+  --nf-muted: #b3b3b3;
+  --nf-accent: #e50914;
+}
+
+html, body, #root {
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(80% 45% at 50% 0%, rgba(36, 36, 36, 0.65) 0%, rgba(20, 20, 20, 0.95) 55%, #141414 100%),
+    var(--nf-bg);
+  color: var(--nf-text);
+  font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Better default scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #444 #1a1a1a;
+}
+
+*::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #5a5a5a, #3a3a3a);
+  border-radius: 999px;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #777, #4f4f4f);
+}
+
+.home-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.home-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to top, #141414 8%, rgba(20, 20, 20, 0.38) 30%, rgba(20, 20, 20, 0) 55%);
+  z-index: 1;
+}
+
+.hero-content {
+  position: relative;
+  z-index: 2;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.btn-primary,
+.btn-secondary {
+  border: none;
+  border-radius: 4px;
+  padding: 10px 22px;
+  font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: #fff;
+  color: #111;
+}
+
+.btn-secondary {
+  background: rgba(109, 109, 110, 0.72);
+  color: #fff;
+}
+
+.nf-row-title {
+  font-size: 27px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+  margin-bottom: 10px;
+}
+
+.nf-row-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0 14px;
+  scroll-snap-type: x proximity;
+}
+
+.nf-row-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.nf-row-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.nf-row-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+}
+
+.nf-card {
+  min-width: 250px;
+  width: 250px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--nf-surface);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  scroll-snap-align: start;
+}
+
+.nf-card:hover {
+  transform: scale(1.08);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.nf-card-media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background-size: cover;
+  background-position: center;
+}
+
+.nf-card-overlay-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  background: linear-gradient(to top, rgba(0,0,0,0.58), rgba(0,0,0,0.12));
+}
+
+.nf-card:hover .nf-card-overlay-play {
+  opacity: 1;
+}
+
+.nf-card-overlay-play span {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 2px solid #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: #fff;
+  background: rgba(0,0,0,0.4);
+}
+
+.admin-shell {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+}
+
+.admin-panel {
+  background: var(--nf-surface);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  box-shadow: 0 12px 24px rgba(0,0,0,0.28);
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+}
+
+.admin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: rgba(255,255,255,0.08);
+  color: #ddd;
+}

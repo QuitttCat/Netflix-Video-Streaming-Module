@@ -4,16 +4,25 @@ import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update, delete
 
+from ..auth import require_admin
 from ..database import get_db
-from ..models import Video
+from ..models import Video, Episode, Session
 from ..services.s3_media import S3MediaService, join_key, parse_s3_uri
 from ..services.video_packaging import build_video_hierarchy_prefix, encode_and_upload_dash_to_s3, encode_video_to_dash
 
 router = APIRouter()
 VIDEO_STORAGE_PATH = os.getenv("VIDEO_STORAGE_PATH", "/videos")
+
+
+class VideoUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    next_episode_id: int | None = None
+    available_qualities: list[str] | None = None
 
 
 def _thumbnail_api_url(video_id: int) -> str:
@@ -137,6 +146,39 @@ async def upload_video_thumbnail(
         "thumbnail_url": _thumbnail_api_url(video.id),
         "thumbnail_path": video.thumbnail_path,
     }
+
+
+@router.delete("/{video_id}/thumbnail")
+async def delete_video_thumbnail(
+    video_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    result = await db.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    thumb_ref = (video.thumbnail_path or "").strip()
+    if thumb_ref:
+        if thumb_ref.startswith("s3://"):
+            try:
+                _, key = parse_s3_uri(thumb_ref)
+                s3 = S3MediaService()
+                await run_in_threadpool(s3.delete_object, key)
+            except Exception:
+                pass
+        else:
+            local_thumb = thumb_ref if os.path.isabs(thumb_ref) else os.path.join(VIDEO_STORAGE_PATH, str(video.id), thumb_ref)
+            if os.path.exists(local_thumb):
+                try:
+                    os.remove(local_thumb)
+                except OSError:
+                    pass
+
+    video.thumbnail_path = None
+    await db.commit()
+    return {"ok": True, "video_id": video_id, "thumbnail_url": _thumbnail_api_url(video_id)}
 
 
 @router.get("/{video_id}/manifest.mpd")
@@ -319,3 +361,102 @@ async def upload_video(
         "duration_seconds": video.duration_seconds,
         "thumbnail_url": _thumbnail_api_url(video.id),
     }
+
+
+@router.put("/{video_id}")
+async def update_video(
+    video_id: int,
+    payload: VideoUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    result = await db.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if payload.title is not None:
+        video.title = payload.title.strip() or video.title
+    if payload.description is not None:
+        video.description = payload.description
+    if payload.next_episode_id is not None:
+        video.next_episode_id = payload.next_episode_id
+    if payload.available_qualities is not None:
+        video.available_qualities = payload.available_qualities
+
+    await db.commit()
+    await db.refresh(video)
+    return {"ok": True, "item": _video_payload(video)}
+
+
+@router.delete("/{video_id}")
+async def delete_video(
+    video_id: int,
+    remove_storage: bool = True,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    result = await db.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    storage_path = (video.storage_path or "").strip()
+    thumbnail_path = (video.thumbnail_path or "").strip()
+
+    await db.execute(
+        update(Episode)
+        .where(Episode.video_id == video_id)
+        .values(video_id=None, playable=False)
+    )
+    await db.execute(
+        update(Episode)
+        .where(Episode.demo_fallback_video_id == video_id)
+        .values(demo_fallback_video_id=None)
+    )
+    await db.execute(
+        update(Video)
+        .where(Video.next_episode_id == video_id)
+        .values(next_episode_id=None)
+    )
+    await db.execute(
+        update(Session)
+        .where(Session.video_id == video_id)
+        .values(video_id=None)
+    )
+    await db.execute(delete(Video).where(Video.id == video_id))
+    await db.commit()
+
+    deleted_assets = 0
+    if remove_storage:
+        if storage_path.startswith("s3://"):
+            try:
+                _, prefix = parse_s3_uri(storage_path)
+                s3 = S3MediaService()
+                deleted_assets += await run_in_threadpool(s3.delete_prefix, prefix)
+            except Exception:
+                pass
+        else:
+            local_dir = os.path.join(VIDEO_STORAGE_PATH, str(video_id))
+            if os.path.isdir(local_dir):
+                for root, _, files in os.walk(local_dir, topdown=False):
+                    for name in files:
+                        try:
+                            os.remove(os.path.join(root, name))
+                            deleted_assets += 1
+                        except OSError:
+                            pass
+                    try:
+                        os.rmdir(root)
+                    except OSError:
+                        pass
+
+    if thumbnail_path and thumbnail_path.startswith("s3://"):
+        try:
+            _, key = parse_s3_uri(thumbnail_path)
+            s3 = S3MediaService()
+            await run_in_threadpool(s3.delete_object, key)
+        except Exception:
+            pass
+
+    return {"ok": True, "video_id": video_id, "deleted_assets": deleted_assets}

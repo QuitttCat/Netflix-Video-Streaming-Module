@@ -15,6 +15,14 @@ export default function AdminDashboard({ token }) {
   const [uploadingThumbEpisodeId, setUploadingThumbEpisodeId] = useState(null)
   const [seedStatus, setSeedStatus] = useState(null)
   const [seedMsg, setSeedMsg] = useState('')
+  const [videos, setVideos] = useState([])
+  const [videoUploadFile, setVideoUploadFile] = useState(null)
+  const [videoUploadTitle, setVideoUploadTitle] = useState('')
+  const [videoUploadDesc, setVideoUploadDesc] = useState('')
+  const [videoThumbFileById, setVideoThumbFileById] = useState({})
+  const [newSeriesTitle, setNewSeriesTitle] = useState('')
+  const [newEpisodeTitle, setNewEpisodeTitle] = useState('')
+  const [newEpisodeNumber, setNewEpisodeNumber] = useState('1')
   const wsRef = useRef(null)
 
   const fetchSeriesOverview = async () => {
@@ -73,6 +81,7 @@ export default function AdminDashboard({ token }) {
   useEffect(() => {
     fetchSeriesOverview()
     fetchSeedStatus()
+    fetchVideos()
   }, [])
 
   useEffect(() => {
@@ -141,6 +150,271 @@ export default function AdminDashboard({ token }) {
       setSeedStatus(payload)
     } catch (e) {
       setSeedMsg(`Seed status error: ${e.message}`)
+    }
+  }
+
+  const fetchVideos = async () => {
+    try {
+      const r = await fetch('/api/videos?limit=100')
+      const text = await r.text()
+      const payload = parseMaybeJson(text)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to load videos')
+      setVideos(payload.items || [])
+    } catch (e) {
+      setUploadMsg(`Video list error: ${e.message}`)
+    }
+  }
+
+  const createSeries = async () => {
+    if (!newSeriesTitle.trim()) {
+      setUploadMsg('Series title is required')
+      return
+    }
+    try {
+      const r = await fetch('/api/catalog/admin/series', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ title: newSeriesTitle, synopsis: '', content_type: 'series' }),
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to create series')
+      setUploadMsg(`Series created: ${payload.series?.title}`)
+      setNewSeriesTitle('')
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Create series error: ${e.message}`)
+    }
+  }
+
+  const createEpisode = async () => {
+    if (!modalSeries || !modalSeason) return
+    if (!newEpisodeTitle.trim()) {
+      setUploadMsg('Episode title is required')
+      return
+    }
+    try {
+      const r = await fetch(`/api/catalog/admin/series/${modalSeries.series_id}/episodes`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          season_id: modalSeason.season_id,
+          title: newEpisodeTitle,
+          episode_number: Number(newEpisodeNumber) || 1,
+          synopsis: '',
+          duration_sec: 0,
+        }),
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to create episode')
+      setUploadMsg(`Episode created: ${payload.episode?.title}`)
+      setNewEpisodeTitle('')
+      setNewEpisodeNumber('1')
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Create episode error: ${e.message}`)
+    }
+  }
+
+  const editSeries = async (seriesItem) => {
+    const nextTitle = window.prompt('Update series title', seriesItem.title)
+    if (nextTitle === null) return
+    try {
+      const r = await fetch(`/api/catalog/admin/series/${seriesItem.series_id}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ title: nextTitle }),
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to update series')
+      setUploadMsg(`Series updated: ${payload.series?.title}`)
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Series update error: ${e.message}`)
+    }
+  }
+
+  const deleteSeries = async (seriesItem) => {
+    if (!window.confirm(`Delete series "${seriesItem.title}" and its seasons/episodes?`)) return
+    try {
+      const r = await fetch(`/api/catalog/admin/series/${seriesItem.series_id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to delete series')
+      setUploadMsg(`Series deleted: ${seriesItem.title}`)
+      setModalSeries(null)
+      setModalSeason(null)
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Series delete error: ${e.message}`)
+    }
+  }
+
+  const editEpisode = async (ep) => {
+    const nextTitle = window.prompt('Update episode title', ep.title)
+    if (nextTitle === null) return
+    try {
+      const r = await fetch(`/api/catalog/admin/episodes/${ep.episode_id}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ title: nextTitle }),
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to update episode')
+      setUploadMsg(`Episode updated: ${payload.episode?.title}`)
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Episode update error: ${e.message}`)
+    }
+  }
+
+  const deleteEpisode = async (ep) => {
+    if (!window.confirm(`Delete episode "${ep.title}"?`)) return
+    try {
+      const r = await fetch(`/api/catalog/admin/episodes/${ep.episode_id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to delete episode')
+      setUploadMsg(`Episode deleted: ${ep.title}`)
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Episode delete error: ${e.message}`)
+    }
+  }
+
+  const uploadNewVideo = async () => {
+    if (!videoUploadFile) {
+      setUploadMsg('Select a video file first')
+      return
+    }
+    try {
+      const form = new FormData()
+      form.append('file', videoUploadFile)
+      const title = videoUploadTitle.trim() || videoUploadFile.name.replace(/\.[^.]+$/, '')
+      const description = videoUploadDesc.trim()
+      const r = await fetch(`/api/videos/upload?title=${encodeURIComponent(title)}&description=${encodeURIComponent(description)}`, {
+        method: 'POST',
+        body: form,
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Upload failed')
+      setUploadMsg(`Video uploaded: ID ${payload.video_id}`)
+      setVideoUploadFile(null)
+      setVideoUploadTitle('')
+      setVideoUploadDesc('')
+      await fetchVideos()
+    } catch (e) {
+      setUploadMsg(`Video upload error: ${e.message}`)
+    }
+  }
+
+  const editVideo = async (videoItem) => {
+    const nextTitle = window.prompt('Update video title', videoItem.title)
+    if (nextTitle === null) return
+    const nextDesc = window.prompt('Update video description', videoItem.description || '')
+    if (nextDesc === null) return
+    try {
+      const r = await fetch(`/api/videos/${videoItem.id}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ title: nextTitle, description: nextDesc }),
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Video update failed')
+      setUploadMsg(`Video updated: ${payload.item?.title}`)
+      await fetchVideos()
+    } catch (e) {
+      setUploadMsg(`Video update error: ${e.message}`)
+    }
+  }
+
+  const deleteVideo = async (videoItem) => {
+    if (!window.confirm(`Delete video "${videoItem.title}"?`)) return
+    try {
+      const r = await fetch(`/api/videos/${videoItem.id}?remove_storage=true`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Video delete failed')
+      setUploadMsg(`Video deleted: ${videoItem.title}`)
+      await fetchVideos()
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Video delete error: ${e.message}`)
+    }
+  }
+
+  const uploadVideoThumbnailById = async (videoId) => {
+    const file = videoThumbFileById[videoId]
+    if (!file) {
+      setUploadMsg('Select a thumbnail file first')
+      return
+    }
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const r = await fetch(`/api/videos/${videoId}/thumbnail`, {
+        method: 'POST',
+        body: form,
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Thumbnail upload failed')
+      setUploadMsg(`Thumbnail updated for video ${videoId}`)
+      setVideoThumbFileById(prev => {
+        const copy = { ...prev }
+        delete copy[videoId]
+        return copy
+      })
+      await fetchVideos()
+    } catch (e) {
+      setUploadMsg(`Thumbnail upload error: ${e.message}`)
+    }
+  }
+
+  const deleteVideoThumbnailById = async (videoId) => {
+    if (!window.confirm(`Delete thumbnail for video ${videoId}?`)) return
+    try {
+      const r = await fetch(`/api/videos/${videoId}/thumbnail`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Thumbnail delete failed')
+      setUploadMsg(`Thumbnail deleted for video ${videoId}`)
+      await fetchVideos()
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Thumbnail delete error: ${e.message}`)
     }
   }
 
@@ -213,13 +487,13 @@ export default function AdminDashboard({ token }) {
   }
 
   return (
-    <div style={{ padding: '32px 40px' }}>
+    <div className="admin-shell" style={{ padding: '32px 40px' }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
-        <h2 style={{ fontSize: 18 }}>Admin Dashboard</h2>
+      <div className="admin-panel" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24, padding: '14px 16px' }}>
+        <h2 style={{ fontSize: 22, letterSpacing: 0.2 }}>Admin Dashboard</h2>
         <div style={{ width: 9, height: 9, borderRadius: '50%',
                       background: connected ? '#46d369' : '#e50914' }} />
-        <span style={{ fontSize: 12, color: '#555' }}>{connected ? 'Live (WebSocket)' : 'Connecting…'}</span>
+        <span className="admin-chip">{connected ? 'Live (WebSocket)' : 'Connecting…'}</span>
         {data && (
           <span style={{ marginLeft: 'auto', fontSize: 12, color: '#555' }}>
             {new Date(data.timestamp).toLocaleTimeString()}
@@ -256,6 +530,7 @@ export default function AdminDashboard({ token }) {
       {/* Active sessions */}
       <Section title="Active Sessions">
         {data?.sessions?.length > 0 ? (
+          <div className="admin-panel admin-table-wrap" style={{ padding: 10 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
@@ -278,6 +553,7 @@ export default function AdminDashboard({ token }) {
               ))}
             </tbody>
           </table>
+          </div>
         ) : (
           <Empty msg="No active sessions." />
         )}
@@ -286,7 +562,7 @@ export default function AdminDashboard({ token }) {
       {/* Buffer events */}
       <Section title="Recent Buffer Events">
         {data?.recent_events?.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <div className="admin-panel" style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: 8 }}>
             {data.recent_events.map((e, i) => (
               <BufferEventRow key={i} event={e} />
             ))}
@@ -297,7 +573,23 @@ export default function AdminDashboard({ token }) {
       </Section>
 
       <Section title="Episode Asset Manager">
-            <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 14 }}>
+        <div className="admin-panel" style={{ padding: 14 }}>
+              <div style={{ marginBottom: 14, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  value={newSeriesTitle}
+                  onChange={e => setNewSeriesTitle(e.target.value)}
+                  placeholder="New series title"
+                  style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 240 }}
+                />
+                <button
+                  type="button"
+                  onClick={createSeries}
+                  style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 12px', cursor: 'pointer', fontWeight: 700 }}
+                >
+                  Create Series
+                </button>
+              </div>
+
               <div style={{ marginBottom: 14, padding: 10, border: '1px solid #2a2a2a', borderRadius: 6, background: '#111' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                   <div style={{ fontSize: 12, color: '#bbb' }}>
@@ -366,6 +658,85 @@ export default function AdminDashboard({ token }) {
             </div>
       </Section>
 
+      <Section title="Video & Thumbnail Manager">
+        <div className="admin-panel" style={{ padding: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, marginBottom: 10 }}>
+            <input
+              value={videoUploadTitle}
+              onChange={e => setVideoUploadTitle(e.target.value)}
+              placeholder="Video title (optional)"
+              style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px' }}
+            />
+            <input
+              value={videoUploadDesc}
+              onChange={e => setVideoUploadDesc(e.target.value)}
+              placeholder="Video description (optional)"
+              style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px' }}
+            />
+            <button
+              type="button"
+              onClick={uploadNewVideo}
+              style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 12px', cursor: 'pointer', fontWeight: 700 }}
+            >
+              Upload Video
+            </button>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <input
+              type="file"
+              accept="video/mp4"
+              onChange={e => setVideoUploadFile(e.target.files?.[0] || null)}
+              style={{ color: '#aaa' }}
+            />
+          </div>
+
+          <div style={{ maxHeight: 300, overflow: 'auto', borderTop: '1px solid #2a2a2a', paddingTop: 10 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {['ID', 'Title', 'Description', 'Thumbnail', 'Actions'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', color: '#777', padding: '6px 8px', borderBottom: '1px solid #2a2a2a' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {videos.map(v => (
+                  <tr key={v.id}>
+                    <td style={{ padding: '8px' }}>{v.id}</td>
+                    <td style={{ padding: '8px' }}>{v.title}</td>
+                    <td style={{ padding: '8px', color: '#999' }}>{v.description || '—'}</td>
+                    <td style={{ padding: '8px' }}>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={e => setVideoThumbFileById(prev => ({ ...prev, [v.id]: e.target.files?.[0] || null }))}
+                        style={{ color: '#aaa' }}
+                      />
+                    </td>
+                    <td style={{ padding: '8px' }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button onClick={() => uploadVideoThumbnailById(v.id)} style={{ background: '#333', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
+                          Upload Thumb
+                        </button>
+                        <button onClick={() => deleteVideoThumbnailById(v.id)} style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
+                          Delete Thumb
+                        </button>
+                        <button onClick={() => editVideo(v)} style={{ background: '#1f1f1f', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
+                          Edit
+                        </button>
+                        <button onClick={() => deleteVideo(v)} style={{ background: '#6a0a10', color: '#fff', border: '1px solid #8f121b', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Section>
+
       {modalSeries && (
         <div
           onClick={() => { setModalSeries(null); setModalSeason(null) }}
@@ -395,12 +766,26 @@ export default function AdminDashboard({ token }) {
                   {modalSeries.is_movie ? 'Movie' : 'Series'} • Missing episodes: {modalSeries.missing_episodes}
                 </div>
               </div>
-              <button
-                onClick={() => { setModalSeries(null); setModalSeason(null) }}
-                style={{ background: 'none', border: '1px solid #444', color: '#aaa', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
-              >
-                Close
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => editSeries(modalSeries)}
+                  style={{ background: '#1f1f1f', border: '1px solid #444', color: '#fff', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
+                >
+                  Edit Series
+                </button>
+                <button
+                  onClick={() => deleteSeries(modalSeries)}
+                  style={{ background: '#6a0a10', border: '1px solid #8f121b', color: '#fff', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
+                >
+                  Delete Series
+                </button>
+                <button
+                  onClick={() => { setModalSeries(null); setModalSeason(null) }}
+                  style={{ background: 'none', border: '1px solid #444', color: '#aaa', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -422,6 +807,31 @@ export default function AdminDashboard({ token }) {
                 </button>
               ))}
             </div>
+
+            {modalSeason && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                <input
+                  value={newEpisodeTitle}
+                  onChange={e => setNewEpisodeTitle(e.target.value)}
+                  placeholder="New episode title"
+                  style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 240 }}
+                />
+                <input
+                  type="number"
+                  min="1"
+                  value={newEpisodeNumber}
+                  onChange={e => setNewEpisodeNumber(e.target.value)}
+                  style={{ width: 90, background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px' }}
+                />
+                <button
+                  type="button"
+                  onClick={createEpisode}
+                  style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 12px', cursor: 'pointer', fontWeight: 700 }}
+                >
+                  Add Episode
+                </button>
+              </div>
+            )}
 
             <div style={{ maxHeight: 420, overflow: 'auto', borderTop: '1px solid #2a2a2a', paddingTop: 10 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -481,6 +891,26 @@ export default function AdminDashboard({ token }) {
                           >
                             {uploadingThumbEpisodeId === ep.episode_id ? 'Uploading…' : 'Upload Thumbnail'}
                           </button>
+
+                          <button
+                            onClick={() => editEpisode(ep)}
+                            style={{
+                              background: '#1f1f1f', color: '#fff', border: '1px solid #555', borderRadius: 4,
+                              padding: '7px 10px', cursor: 'pointer',
+                            }}
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            onClick={() => deleteEpisode(ep)}
+                            style={{
+                              background: '#6a0a10', color: '#fff', border: '1px solid #8f121b', borderRadius: 4,
+                              padding: '7px 10px', cursor: 'pointer',
+                            }}
+                          >
+                            Delete
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -497,7 +927,7 @@ export default function AdminDashboard({ token }) {
 
 function StatCard({ label, value, color }) {
   return (
-    <div style={{ background: '#1a1a1a', borderRadius: 8, padding: 20, textAlign: 'center' }}>
+    <div className="admin-panel" style={{ padding: 20, textAlign: 'center' }}>
       <div style={{ fontSize: 36, fontWeight: 700, color }}>{value}</div>
       <div style={{ fontSize: 12, color: '#555', marginTop: 6 }}>{label}</div>
     </div>
@@ -508,8 +938,9 @@ function CDNCard({ node }) {
   const alive = node.status === 'active'
   return (
     <div style={{
-      background: '#1a1a1a', borderRadius: 8, padding: 14,
+      background: '#1c1c1c', borderRadius: 10, padding: 14,
       border: `1px solid ${alive ? '#46d36922' : '#e5091422'}`,
+      boxShadow: '0 10px 18px rgba(0,0,0,0.25)',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
         <span style={{ fontWeight: 600, fontSize: 13 }}>{node.name}</span>
@@ -529,7 +960,7 @@ function CDNCard({ node }) {
 function BufferEventRow({ event }) {
   const zc = { reservoir: '#e50914', cushion: '#f5a623', upper_reservoir: '#46d369' }
   return (
-    <div style={{ background: '#1a1a1a', borderRadius: 4, padding: '7px 12px',
+    <div style={{ background: '#171717', borderRadius: 6, padding: '9px 12px',
                   display: 'flex', gap: 20, fontSize: 12, flexWrap: 'wrap' }}>
       <span style={{ color: '#555' }}>{new Date(event.timestamp).toLocaleTimeString()}</span>
       <span>Session <b>{event.session_id}</b></span>
@@ -543,7 +974,7 @@ function BufferEventRow({ event }) {
 function Section({ title, children }) {
   return (
     <div style={{ marginBottom: 28 }}>
-      <h3 style={{ fontSize: 12, color: '#555', letterSpacing: 1, marginBottom: 12 }}>
+      <h3 style={{ fontSize: 13, color: '#777', letterSpacing: 1.2, marginBottom: 12, fontWeight: 700 }}>
         {title.toUpperCase()}
       </h3>
       {children}
@@ -553,7 +984,7 @@ function Section({ title, children }) {
 
 function Empty({ msg }) {
   return (
-    <div style={{ background: '#1a1a1a', borderRadius: 6, padding: 20,
+    <div className="admin-panel" style={{ padding: 20,
                   color: '#444', fontSize: 13, textAlign: 'center' }}>
       {msg}
     </div>
