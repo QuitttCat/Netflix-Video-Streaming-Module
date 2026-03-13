@@ -26,6 +26,12 @@ export default function VideoPlayer({ session, video }) {
   const videoRef  = useRef(null)
   const playerRef = useRef(null)
   const [playing,     setPlaying]     = useState(false)
+  const [muted,       setMuted]       = useState(false)
+  const [volume,      setVolume]      = useState(1)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [durationReal, setDurationReal] = useState(0)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const [zone,        setZone]        = useState('reservoir')
   const [quality,     setQuality]     = useState('360p')
   const [playhead,    setPlayhead]    = useState(0)
@@ -37,7 +43,7 @@ export default function VideoPlayer({ session, video }) {
   const [simBuf,      setSimBuf]      = useState(0)  // simulated buffer for BBA demo
   const prefetchTriggered = useRef(false)
 
-  const duration = session?.video_metadata?.duration || 900
+  const duration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0, 1)
   const preset = NET_PRESETS[netMode]
 
   // Initialize dash.js player with smaller buffer targets
@@ -48,7 +54,7 @@ export default function VideoPlayer({ session, video }) {
     const manifestUrl = `/api/videos/${videoId}/manifest.mpd`
 
     const player = dashjs.MediaPlayer().create()
-    player.initialize(videoRef.current, manifestUrl, false)
+    player.initialize(videoRef.current, manifestUrl, true)
     player.updateSettings({
       streaming: {
         buffer: {
@@ -62,6 +68,24 @@ export default function VideoPlayer({ session, video }) {
         },
       },
     })
+
+    const element = videoRef.current
+    element.volume = volume
+    element.muted = muted
+    element.playbackRate = playbackRate
+
+    const tryAutoplay = async () => {
+      try {
+        await element.play()
+        setPlaying(true)
+        setAutoplayBlocked(false)
+        if (simBuf === 0) setSimBuf(2)
+      } catch {
+        setAutoplayBlocked(true)
+      }
+    }
+
+    tryAutoplay()
     playerRef.current = player
     setDashReady(true)
 
@@ -70,6 +94,53 @@ export default function VideoPlayer({ session, video }) {
       playerRef.current = null
     }
   }, [session, video])
+
+  useEffect(() => {
+    if (!videoRef.current) return
+    videoRef.current.volume = volume
+    videoRef.current.muted = muted
+  }, [volume, muted])
+
+  useEffect(() => {
+    if (!videoRef.current) return
+    videoRef.current.playbackRate = playbackRate
+  }, [playbackRate])
+
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement))
+    }
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const tag = (e.target?.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      if (!videoRef.current) return
+
+      if (e.key === ' ' || e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        handlePlayPause()
+      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') {
+        e.preventDefault()
+        seekBy(10)
+      } else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
+        e.preventDefault()
+        seekBy(-10)
+      } else if (e.key.toLowerCase() === 'm') {
+        e.preventDefault()
+        setMuted(v => !v)
+      } else if (e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        toggleFullscreen()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [playing])
 
   // Simulate buffer dynamics based on network preset
   // Real dash.js buffer fills too fast on localhost, so we simulate
@@ -156,11 +227,38 @@ export default function VideoPlayer({ session, video }) {
   const handlePlayPause = () => {
     if (!videoRef.current) return
     if (videoRef.current.paused) {
-      videoRef.current.play()
-      // Kickstart simulated buffer when first playing
-      if (simBuf === 0) setSimBuf(2)
+      videoRef.current.play().then(() => {
+        setAutoplayBlocked(false)
+        if (simBuf === 0) setSimBuf(2)
+      }).catch(() => setAutoplayBlocked(true))
     } else {
       videoRef.current.pause()
+    }
+  }
+
+  const seekBy = (seconds) => {
+    if (!videoRef.current) return
+    const next = Math.max(0, Math.min(duration, (videoRef.current.currentTime || 0) + seconds))
+    videoRef.current.currentTime = next
+    setPlayhead(next)
+  }
+
+  const seekToPercent = (evt) => {
+    if (!videoRef.current || !duration) return
+    const rect = evt.currentTarget.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (evt.clientX - rect.left) / rect.width))
+    const next = ratio * duration
+    videoRef.current.currentTime = next
+    setPlayhead(next)
+  }
+
+  const toggleFullscreen = async () => {
+    const container = document.getElementById('player-shell')
+    if (!container) return
+    if (!document.fullscreenElement) {
+      await container.requestFullscreen?.()
+    } else {
+      await document.exitFullscreen?.()
     }
   }
 
@@ -173,18 +271,82 @@ export default function VideoPlayer({ session, video }) {
         {/* Left: player + buffer bar */}
         <div>
           {/* Real video player */}
-          <div style={{ position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid #222', background: '#000' }}>
+          <div id="player-shell" style={{ position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid #222', background: '#000' }}>
             <video
               ref={videoRef}
               style={{ width: '100%', aspectRatio: '16/9', display: 'block', background: '#000' }}
+              onLoadedMetadata={() => setDurationReal(videoRef.current?.duration || 0)}
               onClick={handlePlayPause}
             />
+
+            {autoplayBlocked && (
+              <div style={{
+                position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'rgba(0,0,0,0.45)',
+              }}>
+                <button
+                  onClick={handlePlayPause}
+                  style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 999, padding: '12px 22px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  ▶ Play
+                </button>
+              </div>
+            )}
+
             <div style={{
               position: 'absolute', top: 10, right: 10, padding: '4px 10px',
               background: 'rgba(0,0,0,0.7)', borderRadius: 4, fontSize: 12,
               color: zoneColor[zone],
             }}>
               {quality} {priority === 'audio' ? ' | AUDIO PRIORITY' : ''}
+            </div>
+
+            <div style={{
+              position: 'absolute', left: 12, right: 12, bottom: 12,
+              background: 'linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0.1))',
+              borderRadius: 8, padding: 10,
+            }}>
+              <div
+                onClick={seekToPercent}
+                style={{ height: 6, background: '#505050', borderRadius: 99, cursor: 'pointer', marginBottom: 10 }}
+              >
+                <div style={{ height: '100%', width: `${(playhead / duration) * 100}%`, borderRadius: 99, background: '#e50914' }} />
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff' }}>
+                <CtlBtn onClick={handlePlayPause}>{playing ? '❚❚' : '▶'}</CtlBtn>
+                <CtlBtn onClick={() => seekBy(-10)}>↺ 10</CtlBtn>
+                <CtlBtn onClick={() => seekBy(10)}>10 ↻</CtlBtn>
+                <CtlBtn onClick={() => setMuted(v => !v)}>{muted || volume === 0 ? '🔇' : '🔊'}</CtlBtn>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={muted ? 0 : volume}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    setVolume(v)
+                    if (muted && v > 0) setMuted(false)
+                  }}
+                  style={{ width: 90 }}
+                />
+
+                <span style={{ marginLeft: 6, fontSize: 12, color: '#d0d0d0' }}>{fmtTime(playhead)} / {fmtTime(duration)}</span>
+
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={playbackRate}
+                    onChange={(e) => setPlaybackRate(Number(e.target.value))}
+                    style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12 }}
+                  >
+                    {[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => (
+                      <option key={r} value={r}>{r}x</option>
+                    ))}
+                  </select>
+                  <CtlBtn onClick={toggleFullscreen}>{isFullscreen ? '⤢' : '⛶'}</CtlBtn>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -292,6 +454,25 @@ function Panel({ title, children }) {
       <div style={{ fontSize: 11, color: '#555', letterSpacing: 1, marginBottom: 10 }}>{title.toUpperCase()}</div>
       {children}
     </div>
+  )
+}
+
+function CtlBtn({ children, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: 'rgba(255,255,255,0.12)',
+        color: '#fff',
+        border: '1px solid rgba(255,255,255,0.25)',
+        borderRadius: 6,
+        padding: '5px 9px',
+        cursor: 'pointer',
+        fontSize: 12,
+      }}
+    >
+      {children}
+    </button>
   )
 }
 
