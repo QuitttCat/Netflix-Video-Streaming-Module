@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 import redis.asyncio as aioredis
 
+from ..auth import get_current_user
 from ..database import get_db
 from ..models import Video, CDNNode, Session, User, VideoProgress
 
@@ -18,7 +19,6 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 class PlaybackProgressRequest(BaseModel):
     session_id: str | None = None
-    user_id: str
     video_id: int
     playhead_position: float
 
@@ -35,9 +35,9 @@ async def get_redis():
 async def start_playback(
     videoId: int,
     clientRegion: str = "dhaka",
-    userId: str = "anonymous",
     db: AsyncSession = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
+    user: User = Depends(get_current_user),
 ):
     cached = await redis.get(f"manifest:{videoId}")
     if cached:
@@ -74,19 +74,16 @@ async def start_playback(
 
     session_id = str(uuid.uuid4())[:8]
     resume_position_seconds = 0.0
-    user_result = await db.execute(select(User).where(User.username == userId))
-    user = user_result.scalar_one_or_none()
-    if user is not None:
-        vp_result = await db.execute(
-            select(VideoProgress).where(VideoProgress.user_id == user.id, VideoProgress.video_id == videoId)
-        )
-        vp = vp_result.scalar_one_or_none()
-        if vp is not None and vp.playhead_seconds is not None:
-            resume_position_seconds = float(max(0.0, vp.playhead_seconds))
+    vp_result = await db.execute(
+        select(VideoProgress).where(VideoProgress.user_id == user.id, VideoProgress.video_id == videoId)
+    )
+    vp = vp_result.scalar_one_or_none()
+    if vp is not None and vp.playhead_seconds is not None:
+        resume_position_seconds = float(max(0.0, vp.playhead_seconds))
 
     session = Session(
         id=session_id,
-        user_id=userId,
+        user_id=user.username,
         video_id=videoId,
         cdn_node_id=cdn_info["id"] if cdn_info["id"] != "origin" else None,
         status="active",
@@ -111,7 +108,18 @@ async def start_playback(
 
 
 @router.post("/end")
-async def end_playback(session_id: str, db: AsyncSession = Depends(get_db)):
+async def end_playback(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Session).where(Session.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != user.username:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
     await db.execute(
         update(Session)
         .where(Session.id == session_id)
@@ -122,18 +130,25 @@ async def end_playback(session_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/progress")
-async def save_playback_progress(payload: PlaybackProgressRequest, db: AsyncSession = Depends(get_db)):
+async def save_playback_progress(
+    payload: PlaybackProgressRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     safe_position = float(max(0.0, payload.playhead_position or 0.0))
-
-    user_result = await db.execute(select(User).where(User.username == payload.user_id))
-    user = user_result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
 
     video_result = await db.execute(select(Video).where(Video.id == payload.video_id))
     video = video_result.scalar_one_or_none()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if payload.session_id:
+        session_result = await db.execute(select(Session).where(Session.id == payload.session_id))
+        session = session_result.scalar_one_or_none()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.user_id != user.username:
+            raise HTTPException(status_code=403, detail="Forbidden")
 
     existing_result = await db.execute(
         select(VideoProgress).where(VideoProgress.user_id == user.id, VideoProgress.video_id == payload.video_id)
@@ -163,7 +178,7 @@ async def save_playback_progress(payload: PlaybackProgressRequest, db: AsyncSess
     return {
         "ok": True,
         "video_id": payload.video_id,
-        "user_id": payload.user_id,
+        "user_id": user.username,
         "playhead_position": safe_position,
     }
 

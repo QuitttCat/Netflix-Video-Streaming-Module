@@ -85,8 +85,11 @@ export default function App() {
 
   const handlePlayVideo = async (video) => {
     try {
-      const r = await fetch(`/api/playback/start?videoId=${video.id}&clientRegion=dhaka&userId=${auth.user.username}`)
+      const r = await fetch(`/api/playback/start?videoId=${video.id}&clientRegion=dhaka`, {
+        headers: { Authorization: `Bearer ${auth.token}` },
+      })
       const data = await r.json()
+      if (!r.ok) throw new Error(data.detail || 'Could not start playback')
       setSession(data)
       setSelVideo(video)
       navigate('player', { videoId: video.id })
@@ -201,7 +204,7 @@ export default function App() {
       )}
 
       {view === 'player' && session && (
-        <VideoPlayer session={session} video={selVideo} user={auth.user} />
+        <VideoPlayer session={session} video={selVideo} user={auth.user} token={auth.token} />
       )}
 
       {view === 'player' && !session && (

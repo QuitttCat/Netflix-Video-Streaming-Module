@@ -22,7 +22,7 @@ const NET_PRESETS = {
   offline: { label: 'Offline (0)',       cap: 0,     color: '#ff0000' },
 }
 
-export default function VideoPlayer({ session, video, user }) {
+export default function VideoPlayer({ session, video, user, token }) {
   const videoRef  = useRef(null)
   const playerRef = useRef(null)
   const resumeAppliedRef = useRef(false)
@@ -238,7 +238,7 @@ export default function VideoPlayer({ session, video, user }) {
   }, [simBuf, quality, playhead, session, video, preset])
 
   const savePlaybackProgress = useCallback(async (force = false) => {
-    if (!session?.session_id || !video?.id || !user?.username) return
+    if (!session?.session_id || !video?.id || !user?.username || !token) return
     const now = Date.now()
     if (!force && now - lastProgressSavedAtRef.current < 10000) return
     lastProgressSavedAtRef.current = now
@@ -246,16 +246,18 @@ export default function VideoPlayer({ session, video, user }) {
     try {
       await fetch('/api/playback/progress', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           session_id: session.session_id,
-          user_id: user.username,
           video_id: video.id,
           playhead_position: playhead,
         }),
       })
     } catch (_) {}
-  }, [session?.session_id, video?.id, user?.username, playhead])
+  }, [session?.session_id, video?.id, user?.username, token, playhead])
 
   useEffect(() => {
     if (!playing) return
@@ -282,10 +284,13 @@ export default function VideoPlayer({ session, video, user }) {
       if (session?.session_id) {
         fetch(`/api/playback/end?session_id=${encodeURIComponent(session.session_id)}`, {
           method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         }).catch(() => {})
       }
     }
-  }, [savePlaybackProgress, session?.session_id])
+  }, [savePlaybackProgress, session?.session_id, token])
 
   // Trigger next-episode prefetch at 90%
   useEffect(() => {

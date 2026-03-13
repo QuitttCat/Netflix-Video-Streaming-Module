@@ -13,7 +13,9 @@ const inputStyle = {
 }
 
 export default function Login({ onLogin }) {
+  const [mode, setMode] = useState('signin')
   const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
@@ -23,13 +25,18 @@ export default function Login({ onLogin }) {
     setError('')
     setLoading(true)
     try {
-      const r = await fetch('/api/auth/login', {
+      const endpoint = mode === 'signup' ? '/api/auth/register' : '/api/auth/login'
+      const payload = mode === 'signup'
+        ? { username, email, password }
+        : { username, password }
+
+      const r = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify(payload),
       })
       const data = await r.json()
-      if (!r.ok) throw new Error(data.detail || 'Login failed')
+      if (!r.ok) throw new Error(data.detail || (mode === 'signup' ? 'Sign up failed' : 'Login failed'))
       onLogin({ token: data.access_token, user: data.user })
     } catch (err) {
       setError(err.message)
@@ -64,7 +71,7 @@ export default function Login({ onLogin }) {
         boxSizing: 'border-box',
       }}>
         <h2 style={{ color: '#fff', fontSize: 32, fontWeight: 700, margin: '0 0 28px' }}>
-          Sign In
+          {mode === 'signup' ? 'Sign Up' : 'Sign In'}
         </h2>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -77,6 +84,17 @@ export default function Login({ onLogin }) {
             autoComplete="username"
             style={inputStyle}
           />
+          {mode === 'signup' && (
+            <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              required
+              autoComplete="email"
+              style={inputStyle}
+            />
+          )}
           <input
             type="password"
             placeholder="Password"
@@ -110,24 +128,41 @@ export default function Login({ onLogin }) {
               letterSpacing: 0.5,
             }}
           >
-            {loading ? 'Signing in…' : 'Sign In'}
+            {loading ? (mode === 'signup' ? 'Creating account…' : 'Signing in…') : (mode === 'signup' ? 'Create Account' : 'Sign In')}
           </button>
         </form>
 
-        {/* Demo credentials hint */}
         <div style={{
-          marginTop: 36,
+          marginTop: 24,
           padding: '14px 16px',
           background: 'rgba(255,255,255,0.05)',
           border: '1px solid #333',
           borderRadius: 6,
           fontSize: 13,
           color: '#999',
-          lineHeight: 1.8,
+          lineHeight: 1.6,
+          textAlign: 'center',
         }}>
-          <div style={{ color: '#ccc', fontWeight: 600, marginBottom: 6 }}>Demo accounts</div>
-          <div>👤 User &nbsp;&nbsp;&nbsp;→ <span style={{ color: '#fff' }}>username:</span> user &nbsp; <span style={{ color: '#fff' }}>password:</span> user</div>
-          <div>🔑 Admin → <span style={{ color: '#fff' }}>username:</span> admin &nbsp;<span style={{ color: '#fff' }}>password:</span> admin</div>
+          {mode === 'signup' ? 'Already have an account?' : 'New here?'}{' '}
+          <button
+            type="button"
+            onClick={() => {
+              setError('')
+              setMode(mode === 'signup' ? 'signin' : 'signup')
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#fff',
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              padding: 0,
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            {mode === 'signup' ? 'Sign in' : 'Create an account'}
+          </button>
         </div>
       </div>
     </div>
