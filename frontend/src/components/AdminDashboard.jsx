@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
-export default function AdminDashboard({ token }) {
+export default function AdminDashboard({ token, mode = 'ops', onOpenContentManager }) {
+  const isContentMode = mode === 'content'
   const [data,      setData]      = useState(null)
   const [connected, setConnected] = useState(false)
   const [series, setSeries] = useState([])
@@ -79,22 +80,24 @@ export default function AdminDashboard({ token }) {
   }, [])
 
   useEffect(() => {
+    if (!isContentMode) return
     fetchSeriesOverview()
     fetchSeedStatus()
     fetchVideos()
-  }, [])
+  }, [isContentMode])
 
   useEffect(() => {
-    if (!seedStatus?.running) return
+    if (!isContentMode || !seedStatus?.running) return
     const t = setInterval(fetchSeedStatus, 2000)
     return () => clearInterval(t)
-  }, [seedStatus?.running])
+  }, [isContentMode, seedStatus?.running])
 
   useEffect(() => {
+    if (!isContentMode) return
     if (seedStatus?.running === false && seedStatus?.success === true) {
       fetchSeriesOverview()
     }
-  }, [seedStatus?.running, seedStatus?.success])
+  }, [isContentMode, seedStatus?.running, seedStatus?.success])
 
   const selectSeries = (item) => {
     setSelectedSeries(item)
@@ -490,7 +493,7 @@ export default function AdminDashboard({ token }) {
     <div className="admin-shell" style={{ padding: '32px 40px' }}>
       {/* Header */}
       <div className="admin-panel" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24, padding: '14px 16px' }}>
-        <h2 style={{ fontSize: 22, letterSpacing: 0.2 }}>Admin Dashboard</h2>
+        <h2 style={{ fontSize: 22, letterSpacing: 0.2 }}>{isContentMode ? 'Content Manager' : 'Admin Dashboard'}</h2>
         <div style={{ width: 9, height: 9, borderRadius: '50%',
                       background: connected ? '#46d369' : '#e50914' }} />
         <span className="admin-chip">{connected ? 'Live (WebSocket)' : 'Connecting…'}</span>
@@ -501,78 +504,100 @@ export default function AdminDashboard({ token }) {
         )}
       </div>
 
-      {/* Summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 24 }}>
-        <StatCard label="Active Sessions" value={data?.active_sessions ?? 0} color="#46d369" />
-        <StatCard label="CDN Nodes" value={data?.cdn_nodes?.length ?? 0} color="#e50914" />
-        <StatCard label="Buffer Events" value={data?.recent_events?.length ?? 0} color="#f5a623" />
-      </div>
-
-      {!data && (
-        <div style={{ color: '#555', textAlign: 'center', marginTop: 8, marginBottom: 22 }}>
-          Live telemetry not connected yet. Catalog tools below are still available.
+      {!isContentMode && (
+        <div className="admin-panel" style={{ padding: 16, marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>Content tools moved to dedicated tab</div>
+            <div style={{ marginTop: 4, fontSize: 12, color: '#aaa' }}>
+              Use Content Manager for series, episodes, uploads, and thumbnails.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpenContentManager?.()}
+            style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 12px', fontWeight: 700, cursor: 'pointer' }}
+          >
+            Open Content Manager
+          </button>
         </div>
       )}
 
-      {/* CDN nodes */}
-      <Section title="CDN Node Health">
-        {data?.cdn_nodes?.length > 0 ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-            {data.cdn_nodes.map(n => (
-              <CDNCard key={n.id} node={n} />
-            ))}
+      {!isContentMode && (
+        <>
+          {/* Summary */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 24 }}>
+            <StatCard label="Active Sessions" value={data?.active_sessions ?? 0} color="#46d369" />
+            <StatCard label="CDN Nodes" value={data?.cdn_nodes?.length ?? 0} color="#e50914" />
+            <StatCard label="Buffer Events" value={data?.recent_events?.length ?? 0} color="#f5a623" />
           </div>
-        ) : (
-          <Empty msg="No CDN node telemetry yet." />
-        )}
-      </Section>
 
-      {/* Active sessions */}
-      <Section title="Active Sessions">
-        {data?.sessions?.length > 0 ? (
-          <div className="admin-panel admin-table-wrap" style={{ padding: 10 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr>
-                {['Session', 'Video', 'Quality', 'CDN Node'].map(h => (
-                  <th key={h} style={{ textAlign: 'left', padding: '8px 12px',
-                                       color: '#555', borderBottom: '1px solid #2a2a2a' }}>
-                    {h}
-                  </th>
+          {!data && (
+            <div style={{ color: '#555', textAlign: 'center', marginTop: 8, marginBottom: 22 }}>
+              Live telemetry not connected yet. Catalog tools are available in Content Manager.
+            </div>
+          )}
+
+          {/* CDN nodes */}
+          <Section title="CDN Node Health">
+            {data?.cdn_nodes?.length > 0 ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                {data.cdn_nodes.map(n => (
+                  <CDNCard key={n.id} node={n} />
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.sessions.map(s => (
-                <tr key={s.id} style={{ borderBottom: '1px solid #1e1e1e' }}>
-                  <td style={{ padding: '8px 12px' }}>{s.id}</td>
-                  <td style={{ padding: '8px 12px' }}>Video {s.video_id}</td>
-                  <td style={{ padding: '8px 12px', color: '#46d369' }}>{s.quality}</td>
-                  <td style={{ padding: '8px 12px', color: '#aaa' }}>{s.cdn_node_id ?? 'origin'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        ) : (
-          <Empty msg="No active sessions." />
-        )}
-      </Section>
+              </div>
+            ) : (
+              <Empty msg="No CDN node telemetry yet." />
+            )}
+          </Section>
 
-      {/* Buffer events */}
-      <Section title="Recent Buffer Events">
-        {data?.recent_events?.length > 0 ? (
-          <div className="admin-panel" style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: 8 }}>
-            {data.recent_events.map((e, i) => (
-              <BufferEventRow key={i} event={e} />
-            ))}
-          </div>
-        ) : (
-          <Empty msg="No buffer events yet." />
-        )}
-      </Section>
+          {/* Active sessions */}
+          <Section title="Active Sessions">
+            {data?.sessions?.length > 0 ? (
+              <div className="admin-panel admin-table-wrap" style={{ padding: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    {['Session', 'Video', 'Quality', 'CDN Node'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '8px 12px',
+                                           color: '#555', borderBottom: '1px solid #2a2a2a' }}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.sessions.map(s => (
+                    <tr key={s.id} style={{ borderBottom: '1px solid #1e1e1e' }}>
+                      <td style={{ padding: '8px 12px' }}>{s.id}</td>
+                      <td style={{ padding: '8px 12px' }}>Video {s.video_id}</td>
+                      <td style={{ padding: '8px 12px', color: '#46d369' }}>{s.quality}</td>
+                      <td style={{ padding: '8px 12px', color: '#aaa' }}>{s.cdn_node_id ?? 'origin'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+            ) : (
+              <Empty msg="No active sessions." />
+            )}
+          </Section>
 
-      <Section title="Episode Asset Manager">
+          {/* Buffer events */}
+          <Section title="Recent Buffer Events">
+            {data?.recent_events?.length > 0 ? (
+              <div className="admin-panel" style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: 8 }}>
+                {data.recent_events.map((e, i) => (
+                  <BufferEventRow key={i} event={e} />
+                ))}
+              </div>
+            ) : (
+              <Empty msg="No buffer events yet." />
+            )}
+          </Section>
+        </>
+      )}
+
+      {isContentMode && <Section title="Episode Asset Manager">
         <div className="admin-panel" style={{ padding: 14 }}>
               <div style={{ marginBottom: 14, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input
@@ -656,9 +681,9 @@ export default function AdminDashboard({ token }) {
 
               {uploadMsg && <div style={{ marginTop: 10, fontSize: 12, color: '#f5a623' }}>{uploadMsg}</div>}
             </div>
-      </Section>
+      </Section>}
 
-      <Section title="Video & Thumbnail Manager">
+      {isContentMode && <Section title="Video & Thumbnail Manager">
         <div className="admin-panel" style={{ padding: 14 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, marginBottom: 10 }}>
             <input
@@ -735,9 +760,9 @@ export default function AdminDashboard({ token }) {
             </table>
           </div>
         </div>
-      </Section>
+      </Section>}
 
-      {modalSeries && (
+      {isContentMode && modalSeries && (
         <div
           onClick={() => { setModalSeries(null); setModalSeason(null) }}
           style={{

@@ -5,12 +5,14 @@ import Login from './components/Login.jsx'
 import CatalogHome from './components/CatalogHome.jsx'
 
 function resolveViewFromPath(pathname, isAdmin) {
+  if (pathname.startsWith('/admin/content') && isAdmin) return 'content'
   if (pathname.startsWith('/admin') && isAdmin) return 'admin'
   if (pathname.startsWith('/watch')) return 'player'
   return 'home'
 }
 
 function pathForView(nextView, selectedVideoId) {
+  if (nextView === 'content') return '/admin/content'
   if (nextView === 'admin') return '/admin'
   if (nextView === 'player') return `/watch/${selectedVideoId || ''}`
   return '/home'
@@ -18,7 +20,7 @@ function pathForView(nextView, selectedVideoId) {
 
 export default function App() {
   const [auth,     setAuth]     = useState(null)     // null | { token, user }
-  const [view,     setView]     = useState('home')   // 'home' | 'player' | 'admin'
+  const [view,     setView]     = useState('home')   // 'home' | 'player' | 'admin' | 'content'
   const [session,  setSession]  = useState(null)
   const [selVideo, setSelVideo] = useState(null)
 
@@ -151,10 +153,13 @@ export default function App() {
         <h1 style={{ color: '#e50914', fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>
           NETFLIX
         </h1>
-        <nav style={{ display: 'flex', gap: 20 }}>
+        <nav style={{ display: 'flex', gap: 10 }}>
           <NavBtn label="Home"       active={view === 'home'}  onClick={() => navigate('home')}  />
           {isAdmin && (
-            <NavBtn label="Dashboard" active={view === 'admin'} onClick={() => navigate('admin')} />
+            <>
+              <NavBtn label="Dashboard" active={view === 'admin'} onClick={() => navigate('admin')} />
+              <NavBtn label="Content" active={view === 'content'} onClick={() => navigate('content')} />
+            </>
           )}
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -210,7 +215,8 @@ export default function App() {
         </div>
       )}
 
-      {view === 'admin' && <AdminDashboard token={auth.token} />}
+      {view === 'admin' && <AdminDashboard token={auth.token} mode="ops" onOpenContentManager={() => navigate('content')} />}
+      {view === 'content' && <AdminDashboard token={auth.token} mode="content" />}
     </div>
   )
 }
@@ -218,11 +224,13 @@ export default function App() {
 function NavBtn({ label, active, onClick }) {
   return (
     <button onClick={onClick} style={{
-      background: 'none', border: 'none',
-      color: active ? '#fff' : '#aaa',
+      background: active ? 'rgba(229,9,20,0.16)' : 'rgba(255,255,255,0.04)',
+      border: active ? '1px solid rgba(229,9,20,0.5)' : '1px solid rgba(255,255,255,0.14)',
+      borderRadius: 999,
+      color: active ? '#fff' : '#c2c2c2',
       fontWeight: active ? 700 : 400,
-      fontSize: 14, cursor: 'pointer', padding: '4px 0',
-      borderBottom: active ? '2px solid #e50914' : '2px solid transparent',
+      fontSize: 13, cursor: 'pointer', padding: '6px 14px',
+      letterSpacing: 0.2,
     }}>
       {label}
     </button>
