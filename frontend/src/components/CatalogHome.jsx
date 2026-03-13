@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 
 export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlaySeries }) {
   const [data, setData] = useState(null)
-  const [uploads, setUploads] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [seriesModal, setSeriesModal] = useState(null)
+  const [seriesEpisodes, setSeriesEpisodes] = useState([])
+  const [seriesEpisodesLoading, setSeriesEpisodesLoading] = useState(false)
+  const [seriesModalMsg, setSeriesModalMsg] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -33,23 +36,6 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
     }
   }, [token])
 
-  useEffect(() => {
-    let alive = true
-    fetch('/api/videos?limit=24')
-      .then(async r => {
-        const payloadText = await r.text()
-        const payload = payloadText ? JSON.parse(payloadText) : {}
-        if (!r.ok) throw new Error(payload.detail || 'Failed to load videos')
-        if (alive) setUploads(Array.isArray(payload.items) ? payload.items : [])
-      })
-      .catch(() => {
-        if (alive) setUploads([])
-      })
-    return () => {
-      alive = false
-    }
-  }, [])
-
   if (error) {
     return (
       <div style={{ padding: 40 }}>
@@ -74,7 +60,50 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
   const rows = Array.isArray(data.rows) ? data.rows : []
   const continueRow = rows.find(r => r.id === 'continue')
   const firstEpisodeId = continueRow?.items?.[0]?.episode_id || 1
-  const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0) || uploads.length > 0
+  const hasAnyItems = rows.some(r => (r.items?.length || 0) > 0)
+
+  const openSeriesModal = async (seriesItem) => {
+    setSeriesModal(seriesItem)
+    setSeriesEpisodes([])
+    setSeriesModalMsg('')
+    setSeriesEpisodesLoading(true)
+    try {
+      const r = await fetch(`/api/catalog/series/${seriesItem.series_id}/episodes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payloadText = await r.text()
+      const payload = payloadText ? JSON.parse(payloadText) : {}
+      if (!r.ok) throw new Error(payload.detail || 'Failed to load episodes')
+
+      if (payload.series) {
+        setSeriesModal(payload.series)
+      }
+
+      const episodes = Array.isArray(payload.episodes) ? payload.episodes : []
+      setSeriesEpisodes(episodes)
+
+      const playableCount = episodes.filter(ep => ep.playable && ep.video_id).length
+      if (episodes.length === 0) {
+        setSeriesModalMsg('No episodes found for this title yet.')
+      } else if (playableCount === 0) {
+        setSeriesModalMsg('Episodes exist, but no episode is uploaded and playable yet.')
+      }
+    } catch (e) {
+      setSeriesModalMsg(e.message)
+    } finally {
+      setSeriesEpisodesLoading(false)
+    }
+  }
+
+  const handleSeriesEpisodeClick = async (episode) => {
+    if (!episode.playable || !episode.video_id) {
+      setSeriesModalMsg(`S${episode.season_number}:E${episode.episode_number} is not uploaded yet.`)
+      return
+    }
+    setSeriesModal(null)
+    setSeriesModalMsg('')
+    await onPlayEpisode(episode.episode_id)
+  }
 
   return (
     <div className="home-shell">
@@ -83,16 +112,6 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
       )}
 
       <div style={{ marginTop: -80, position: 'relative', zIndex: 2, paddingBottom: 36 }}>
-        <Row
-          key="uploads"
-          title="Uploaded Videos"
-          items={uploads}
-          type="video"
-          onPlayEpisode={onPlayEpisode}
-          onPlayVideo={onPlayVideo}
-          onPlaySeries={onPlaySeries}
-        />
-
         {rows.map(row => (
           <Row
             key={row.id}
@@ -102,6 +121,7 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
             onPlayEpisode={onPlayEpisode}
             onPlayVideo={onPlayVideo}
             onPlaySeries={onPlaySeries}
+            onOpenSeries={openSeriesModal}
           />
         ))}
 
@@ -111,6 +131,20 @@ export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlayS
           </div>
         )}
       </div>
+
+      {seriesModal && (
+        <SeriesEpisodesModal
+          series={seriesModal}
+          episodes={seriesEpisodes}
+          loading={seriesEpisodesLoading}
+          message={seriesModalMsg}
+          onClose={() => {
+            setSeriesModal(null)
+            setSeriesModalMsg('')
+          }}
+          onPlayEpisode={handleSeriesEpisodeClick}
+        />
+      )}
     </div>
   )
 }
@@ -150,7 +184,7 @@ function HeroBanner({ hero, onPlay }) {
   )
 }
 
-function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries }) {
+function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries, onOpenSeries }) {
   const list = Array.isArray(items) ? items : []
   return (
     <div style={{ padding: '0 48px', marginTop: 28 }}>
@@ -169,11 +203,135 @@ function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries }) {
             onClick={() => {
               if (type === 'episode') onPlayEpisode(item.episode_id)
               if (type === 'video') onPlayVideo(item)
-              if (type === 'series') onPlaySeries(item.series_id)
+              if (type === 'series') onOpenSeries?.(item)
             }}
             clickable={type === 'episode' || type === 'video' || type === 'series'}
           />
         ))}
+      </div>
+    </div>
+  )
+}
+
+function SeriesEpisodesModal({ series, episodes, loading, message, onClose, onPlayEpisode }) {
+  const heroImage = series.backdrop_url || series.poster_url || '/default-thumbnail.svg'
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1500,
+        background: 'rgba(0,0,0,0.78)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 22,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="admin-panel"
+        style={{ width: 'min(980px, 96vw)', maxHeight: '90vh', overflow: 'auto', padding: 0 }}
+      >
+        <div
+          style={{
+            position: 'relative',
+            minHeight: 240,
+            backgroundImage: `linear-gradient(to top, rgba(20,20,20,0.95), rgba(20,20,20,0.35)), url(${heroImage})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            borderTopLeftRadius: 10,
+            borderTopRightRadius: 10,
+            padding: '22px 22px 18px',
+          }}
+        >
+          <button
+            onClick={onClose}
+            style={{
+              position: 'absolute',
+              top: 14,
+              right: 14,
+              width: 34,
+              height: 34,
+              borderRadius: '50%',
+              border: '1px solid rgba(255,255,255,0.35)',
+              background: 'rgba(0,0,0,0.45)',
+              color: '#fff',
+              cursor: 'pointer',
+              fontSize: 16,
+            }}
+          >
+            ✕
+          </button>
+
+          <div style={{ fontSize: 30, fontWeight: 800, marginTop: 18 }}>{series.title}</div>
+          <div style={{ marginTop: 8, color: '#ddd', lineHeight: 1.6, maxWidth: 760 }}>
+            {series.synopsis || 'No description available yet.'}
+          </div>
+        </div>
+
+        <div style={{ padding: 18 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>Episodes</div>
+
+          {loading && <div style={{ color: '#aaa' }}>Loading episodes…</div>}
+          {!loading && message && (
+            <div style={{ marginBottom: 10, color: '#f5a623', fontSize: 13 }}>{message}</div>
+          )}
+
+          {!loading && episodes.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {episodes.map(ep => {
+                const ready = ep.playable && ep.video_id
+                const dur = ep.duration_sec ? `${Math.floor(ep.duration_sec / 60)}m ${ep.duration_sec % 60}s` : '—'
+                return (
+                  <button
+                    key={ep.episode_id}
+                    onClick={() => onPlayEpisode(ep)}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '120px 1fr auto',
+                      gap: 12,
+                      alignItems: 'center',
+                      textAlign: 'left',
+                      border: ready ? '1px solid #2f2f2f' : '1px solid #4b3120',
+                      background: ready ? '#141414' : '#1f1712',
+                      color: '#fff',
+                      borderRadius: 8,
+                      padding: 10,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div
+                      style={{
+                        borderRadius: 6,
+                        aspectRatio: '16 / 9',
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        backgroundImage: ep.thumbnail_url
+                          ? `url(${ep.thumbnail_url})`
+                          : 'linear-gradient(120deg,#363636,#212121)',
+                      }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 700 }}>
+                        S{ep.season_number}:E{ep.episode_number} • {ep.title}
+                      </div>
+                      <div style={{ marginTop: 5, color: '#aaa', fontSize: 12 }}>{ep.synopsis || 'No synopsis available.'}</div>
+                    </div>
+                    <div style={{ textAlign: 'right', minWidth: 120 }}>
+                      <div style={{ fontSize: 12, color: '#bbb' }}>{dur}</div>
+                      <div style={{ marginTop: 6, fontSize: 12, color: ready ? '#46d369' : '#f5a623' }}>
+                        {ready ? 'Play now' : 'Not uploaded yet'}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

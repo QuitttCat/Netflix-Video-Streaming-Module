@@ -281,7 +281,7 @@ async def upload_video(
     video = Video(
         title=title,
         description=description,
-        available_qualities=["360p", "480p", "720p", "1080p"],
+        available_qualities=["320p", "480p", "720p"],
     )
     db.add(video)
     await db.flush()

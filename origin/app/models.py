@@ -113,7 +113,7 @@ class Session(Base):
     video_id          = Column(Integer, ForeignKey("videos.id"))
     cdn_node_id       = Column(String(64), ForeignKey("cdn_nodes.id"), nullable=True)
     status            = Column(String(16), default="active")
-    quality           = Column(String(8), default="360p")
+    quality           = Column(String(8), default="320p")
     playhead_position = Column(Float, default=0.0)
     created_at        = Column(DateTime, default=datetime.utcnow)
     ended_at          = Column(DateTime, nullable=True)

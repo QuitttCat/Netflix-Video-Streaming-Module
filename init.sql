@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     video_id        INTEGER REFERENCES videos(id),
     cdn_node_id     VARCHAR(64) REFERENCES cdn_nodes(id),
     status          VARCHAR(16) DEFAULT 'active',
-    quality         VARCHAR(8)  DEFAULT '360p',
+    quality         VARCHAR(8)  DEFAULT '320p',
     playhead_position FLOAT     DEFAULT 0.0,
     created_at      TIMESTAMP   DEFAULT NOW(),
     ended_at        TIMESTAMP
@@ -136,9 +136,9 @@ CREATE TABLE IF NOT EXISTS watch_progress (
 INSERT INTO videos (title, description, duration_seconds, total_segments, available_qualities, storage_path)
 VALUES
     ('Demo Episode 1', 'First episode - Intelligent Buffering Demo', 900, 150,
-     ARRAY['360p','480p','720p','1080p'], '/videos/1'),
+    ARRAY['320p','480p','720p'], '/videos/1'),
     ('Demo Episode 2', 'Second episode - CDN Failover Demo', 900, 150,
-     ARRAY['360p','480p','720p','1080p'], '/videos/2')
+    ARRAY['320p','480p','720p'], '/videos/2')
 ON CONFLICT DO NOTHING;
 
 -- Link episode 1 -> episode 2 for next-episode preload demo

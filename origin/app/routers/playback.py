@@ -44,7 +44,7 @@ async def start_playback(
             "title":               video.title,
             "duration":            video.duration_seconds,
             "total_segments":      video.total_segments,
-            "available_qualities": video.available_qualities or ["360p", "480p", "720p", "1080p"],
+            "available_qualities": video.available_qualities or ["320p", "480p", "720p"],
             "has_next_episode":    video.next_episode_id is not None,
             "next_episode_id":     video.next_episode_id,
         }

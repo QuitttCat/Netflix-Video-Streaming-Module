@@ -24,6 +24,8 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const [newSeriesTitle, setNewSeriesTitle] = useState('')
   const [newEpisodeTitle, setNewEpisodeTitle] = useState('')
   const [newEpisodeNumber, setNewEpisodeNumber] = useState('1')
+  const [seriesSearch, setSeriesSearch] = useState('')
+  const [seriesThumbFile, setSeriesThumbFile] = useState(null)
   const wsRef = useRef(null)
 
   const fetchSeriesOverview = async () => {
@@ -421,6 +423,47 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     }
   }
 
+  const uploadSeriesThumbnail = async (seriesId) => {
+    if (!seriesThumbFile) {
+      setUploadMsg('Select a series thumbnail first')
+      return
+    }
+    try {
+      const form = new FormData()
+      form.append('file', seriesThumbFile)
+      const r = await fetch(`/api/catalog/admin/series/${seriesId}/thumbnail`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Series thumbnail upload failed')
+      setUploadMsg('Series thumbnail updated')
+      setSeriesThumbFile(null)
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Series thumbnail error: ${e.message}`)
+    }
+  }
+
+  const deleteSeriesThumbnail = async (seriesId) => {
+    if (!window.confirm('Delete this series thumbnail?')) return
+    try {
+      const r = await fetch(`/api/catalog/admin/series/${seriesId}/thumbnail`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Series thumbnail delete failed')
+      setUploadMsg('Series thumbnail deleted')
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Series thumbnail delete error: ${e.message}`)
+    }
+  }
+
   const uploadEpisodeThumbnail = async (episode) => {
     setUploadMsg('')
     if (!episode.video_id) {
@@ -646,15 +689,27 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                 )}
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                <div style={{ fontSize: 12, color: '#aaa' }}>Click a title with missing videos to open episode upload popup.</div>
-                <button type="button" onClick={fetchSeriesOverview} style={{ background: 'transparent', color: '#aaa', border: '1px solid #444', borderRadius: 4, padding: '7px 10px', cursor: 'pointer' }}>
-                  Refresh
-                </button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: '#aaa' }}>Select any title to manage episodes, videos, and thumbnails.</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    value={seriesSearch}
+                    onChange={e => setSeriesSearch(e.target.value)}
+                    placeholder="Search series..."
+                    style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '7px 10px', minWidth: 220 }}
+                  />
+                  <button type="button" onClick={fetchSeriesOverview} style={{ background: 'transparent', color: '#aaa', border: '1px solid #444', borderRadius: 4, padding: '7px 10px', cursor: 'pointer' }}>
+                    Refresh
+                  </button>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 10, marginBottom: 12 }}>
-                {series.filter(x => x.missing_episodes > 0).map(sr => {
+                {series.filter(x => {
+                  const q = seriesSearch.trim().toLowerCase()
+                  if (!q) return true
+                  return (x.title || '').toLowerCase().includes(q)
+                }).map(sr => {
                   const active = selectedSeries?.series_id === sr.series_id
                   return (
                     <button
@@ -670,9 +725,20 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                         padding: 10, cursor: 'pointer',
                       }}
                     >
+                      <div
+                        style={{
+                          width: '100%',
+                          aspectRatio: '16 / 9',
+                          borderRadius: 5,
+                          marginBottom: 8,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                          backgroundImage: `url(${sr.thumbnail_url || sr.poster_url || '/default-thumbnail.svg'})`,
+                        }}
+                      />
                       <div style={{ fontSize: 12, fontWeight: 700 }}>{sr.title}</div>
                       <div style={{ fontSize: 11, color: '#999', marginTop: 5 }}>
-                        {sr.is_movie ? 'Movie' : 'Series'} • Missing: <span style={{ color: sr.missing_episodes > 0 ? '#e50914' : '#46d369' }}>{sr.missing_episodes}</span>
+                        {sr.is_movie ? 'Movie' : 'Series'} • Episodes: {sr.total_episodes} • Missing: <span style={{ color: sr.missing_episodes > 0 ? '#e50914' : '#46d369' }}>{sr.missing_episodes}</span>
                       </div>
                     </button>
                   )
@@ -810,6 +876,47 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                 >
                   Close
                 </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+              <div
+                style={{
+                  width: 220,
+                  aspectRatio: '16 / 9',
+                  borderRadius: 8,
+                  border: '1px solid #333',
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundImage: `url(${modalSeries.thumbnail_url || modalSeries.poster_url || '/default-thumbnail.svg'})`,
+                }}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={e => setSeriesThumbFile(e.target.files?.[0] || null)}
+                  style={{ color: '#aaa' }}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => uploadSeriesThumbnail(modalSeries.series_id)}
+                    style={{ background: '#333', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '7px 10px', cursor: 'pointer' }}
+                  >
+                    Upload Series Thumbnail
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteSeriesThumbnail(modalSeries.series_id)}
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '7px 10px', cursor: 'pointer' }}
+                  >
+                    Delete Series Thumbnail
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, color: '#999', maxWidth: 500 }}>
+                  {modalSeries.synopsis || 'No series description yet.'}
+                </div>
               </div>
             </div>
 

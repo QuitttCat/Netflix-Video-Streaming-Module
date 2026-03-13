@@ -7,7 +7,7 @@ from ..schemas import BufferingReport, BufferingRecommendation
 
 router = APIRouter()
 
-QUALITIES   = ["360p", "480p", "720p", "1080p"]
+QUALITIES   = ["320p", "480p", "720p"]
 MIN_BUFFER  = 10.0
 MAX_BUFFER  = 60.0
 RESERVOIR   = 10.0   # 0 - 10s  → lowest quality
@@ -18,9 +18,9 @@ CUSHION_TOP = 45.0   # 10 - 45s → linear interpolation
 def bba(buffer_seconds: float) -> tuple[str, str]:
     """Buffer-Based Adaptation. Returns (quality, zone)."""
     if buffer_seconds <= RESERVOIR:
-        return "360p", "reservoir"
+        return "320p", "reservoir"
     if buffer_seconds >= CUSHION_TOP:
-        return "1080p", "upper_reservoir"
+        return "720p", "upper_reservoir"
     ratio = (buffer_seconds - RESERVOIR) / (CUSHION_TOP - RESERVOIR)
     idx   = min(int(ratio * len(QUALITIES)), len(QUALITIES) - 1)
     return QUALITIES[idx], "cushion"

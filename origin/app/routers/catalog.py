@@ -4,7 +4,9 @@ from typing import Optional
 from datetime import datetime
 
 import aiofiles
+from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -12,7 +14,7 @@ from pydantic import BaseModel
 from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..models import Series, Season, Episode, MediaTrack, User, Video, WatchProgress
-from ..services.s3_media import S3MediaService
+from ..services.s3_media import S3MediaService, join_key, parse_s3_uri
 from ..services.video_packaging import (
     build_video_hierarchy_prefix,
     encode_and_upload_dash_to_s3,
@@ -75,6 +77,21 @@ class EpisodeUpdateRequest(BaseModel):
     video_id: int | None = None
 
 
+def _series_thumbnail_api_url(series_id: int) -> str:
+    return f"/api/catalog/series/{series_id}/thumbnail"
+
+
+def _fallback_svg(label: str = "NETFLIX") -> str:
+    return (
+        "<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720'>"
+        "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
+        "<stop offset='0%' stop-color='#2b2b2b'/><stop offset='100%' stop-color='#101010'/></linearGradient></defs>"
+        "<rect width='100%' height='100%' fill='url(#g)'/>"
+        f"<text x='50%' y='52%' dominant-baseline='middle' text-anchor='middle' fill='#e5e5e5' font-family='Arial' font-size='56' font-weight='700'>{label}</text>"
+        "</svg>"
+    )
+
+
 @router.get("/home")
 async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     featured_result = await db.execute(select(Series).where(Series.featured == True).limit(1))
@@ -90,8 +107,9 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
     movie_items = movie_result.scalars().all()
 
     continue_result = await db.execute(
-        select(Episode, Series, Video)
+        select(Episode, Series, Season, Video)
         .join(Series, Series.id == Episode.series_id)
+        .join(Season, Season.id == Episode.season_id)
         .outerjoin(Video, Video.id == Episode.video_id)
         .where(Episode.playable == True)
         .limit(10)
@@ -110,13 +128,13 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
                     {
                         "episode_id": e.id,
                         "title": e.title,
-                        "subtitle": f"{s.title} • S1:E{e.episode_number}",
-                        "thumbnail_url": f"/api/videos/{e.video_id}/thumbnail" if e.video_id else None,
+                        "subtitle": f"{s.title} • S{se.season_number}:E{e.episode_number}",
+                        "thumbnail_url": f"/api/videos/{e.video_id}/thumbnail" if e.video_id else _series_thumbnail_api_url(s.id),
                         "poster_url": s.poster_url,
                         "backdrop_url": s.backdrop_url,
                         "playable": e.playable,
                     }
-                    for e, s, v in continue_items
+                    for e, s, se, v in continue_items
                 ],
             },
             {"id": "trending", "title": "Trending Now", "type": "series", "items": [serialize_series(x) for x in trending]},
@@ -165,9 +183,10 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
                         "episode_id": ep.id,
                         "episode_number": ep.episode_number,
                         "title": ep.title,
+                        "synopsis": ep.synopsis or sr.synopsis or "",
                         "playable": ep.playable,
                         "video_id": ep.video_id,
-                        "thumbnail_url": f"/api/videos/{ep.video_id}/thumbnail" if ep.video_id else None,
+                        "thumbnail_url": f"/api/videos/{ep.video_id}/thumbnail" if ep.video_id else _series_thumbnail_api_url(sr.id),
                         "missing_video": is_missing,
                     }
                 )
@@ -187,6 +206,8 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
                 "content_type": sr.content_type,
                 "is_movie": sr.content_type == "movie",
                 "poster_url": sr.poster_url,
+                "thumbnail_url": _series_thumbnail_api_url(sr.id),
+                "synopsis": sr.synopsis,
                 "popularity": sr.popularity,
                 "total_episodes": total_count,
                 "missing_episodes": missing_count,
@@ -199,6 +220,11 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
 
 @router.get("/series/{series_id}/episodes")
 async def list_series_episodes(series_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    series_result = await db.execute(select(Series).where(Series.id == series_id))
+    series = series_result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
     result = await db.execute(
         select(Episode, Season)
         .join(Season, Season.id == Episode.season_id)
@@ -223,21 +249,129 @@ async def list_series_episodes(series_id: int, db: AsyncSession = Depends(get_db
 
     return {
         "series_id": series_id,
+        "series": serialize_series(series),
         "episodes": [
             {
                 "episode_id": e.id,
                 "season_number": s.season_number,
                 "episode_number": e.episode_number,
                 "title": e.title,
-                "synopsis": e.synopsis,
+                "synopsis": e.synopsis or series.synopsis or "",
                 "duration_sec": e.duration_sec,
                 "playable": e.playable,
                 "video_id": e.video_id,
+                "thumbnail_url": f"/api/videos/{e.video_id}/thumbnail" if e.video_id else _series_thumbnail_api_url(series_id),
                 "tracks": track_map.get(e.id, []),
             }
             for e, s in rows
         ],
     }
+
+
+@router.get("/series/{series_id}/thumbnail")
+async def get_series_thumbnail(series_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Series).where(Series.id == series_id))
+    series = result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    thumb_ref = (series.logo_url or "").strip()
+    if thumb_ref:
+        if thumb_ref.startswith("s3://"):
+            try:
+                _, key = parse_s3_uri(thumb_ref)
+                s3 = S3MediaService()
+                body, content_type = await run_in_threadpool(s3.get_object_bytes, key)
+                return Response(content=body, media_type=content_type or "image/jpeg")
+            except Exception:
+                pass
+        elif thumb_ref.startswith("http://") or thumb_ref.startswith("https://"):
+            return RedirectResponse(url=thumb_ref)
+        else:
+            local_thumb = thumb_ref if os.path.isabs(thumb_ref) else os.path.join(VIDEO_STORAGE_PATH, "series", str(series_id), thumb_ref)
+            if os.path.exists(local_thumb):
+                mt = "image/png" if local_thumb.lower().endswith(".png") else "image/jpeg"
+                return FileResponse(local_thumb, media_type=mt)
+
+    if series.poster_url:
+        return RedirectResponse(url=series.poster_url)
+    if series.backdrop_url:
+        return RedirectResponse(url=series.backdrop_url)
+
+    return Response(content=_fallback_svg("SERIES"), media_type="image/svg+xml")
+
+
+@router.post("/admin/series/{series_id}/thumbnail")
+async def admin_upload_series_thumbnail(
+    series_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Series).where(Series.id == series_id))
+    series = result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Thumbnail file is empty")
+
+    ext = os.path.splitext(file.filename or "thumbnail.jpg")[1].lower() or ".jpg"
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(status_code=400, detail="Thumbnail must be jpg/jpeg/png/webp")
+    media_type = file.content_type or ("image/png" if ext == ".png" else "image/jpeg")
+
+    storage_backend = (os.getenv("VIDEO_STORAGE_BACKEND", "s3") or "s3").lower()
+    if storage_backend == "s3":
+        s3 = S3MediaService()
+        key = join_key(f"netflix/series/series-{series_id}", f"thumbnail{ext}")
+        await run_in_threadpool(s3.upload_bytes, key, data, media_type)
+        series.logo_url = f"s3://{s3.bucket_name}/{key}"
+    else:
+        folder = os.path.join(VIDEO_STORAGE_PATH, "series", str(series_id))
+        os.makedirs(folder, exist_ok=True)
+        file_name = f"thumbnail{ext}"
+        path = os.path.join(folder, file_name)
+        async with aiofiles.open(path, "wb") as f:
+            await f.write(data)
+        series.logo_url = file_name
+
+    await db.commit()
+    await db.refresh(series)
+    return {"ok": True, "series_id": series_id, "thumbnail_url": _series_thumbnail_api_url(series_id)}
+
+
+@router.delete("/admin/series/{series_id}/thumbnail")
+async def admin_delete_series_thumbnail(
+    series_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Series).where(Series.id == series_id))
+    series = result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    thumb_ref = (series.logo_url or "").strip()
+    if thumb_ref.startswith("s3://"):
+        try:
+            _, key = parse_s3_uri(thumb_ref)
+            s3 = S3MediaService()
+            await run_in_threadpool(s3.delete_object, key)
+        except Exception:
+            pass
+    elif thumb_ref and not thumb_ref.startswith("http://") and not thumb_ref.startswith("https://"):
+        local_thumb = thumb_ref if os.path.isabs(thumb_ref) else os.path.join(VIDEO_STORAGE_PATH, "series", str(series_id), thumb_ref)
+        if os.path.exists(local_thumb):
+            try:
+                os.remove(local_thumb)
+            except OSError:
+                pass
+
+    series.logo_url = None
+    await db.commit()
+    return {"ok": True, "series_id": series_id, "thumbnail_url": _series_thumbnail_api_url(series_id)}
 
 
 @router.get("/episodes/{episode_id}/playback")
@@ -537,7 +671,7 @@ async def _upload_episode_video_impl(
         video = Video(
             title=title or f"Episode {episode.episode_number}",
             description=description,
-            available_qualities=["360p", "480p", "720p", "1080p"],
+            available_qualities=["320p", "480p", "720p"],
             storage_path="",
         )
         db.add(video)
@@ -614,7 +748,7 @@ async def _upload_episode_video_impl(
 
     video.duration_seconds = encode_result["duration_seconds"]
     video.total_segments = encode_result["total_segments"]
-    video.available_qualities = ["360p", "480p", "720p", "1080p"]
+    video.available_qualities = ["320p", "480p", "720p"]
 
     episode.video_id = video.id
     episode.playable = True
@@ -646,6 +780,7 @@ def serialize_series(item: Optional[Series]):
         "poster_url": item.poster_url,
         "backdrop_url": item.backdrop_url,
         "logo_url": item.logo_url,
+        "thumbnail_url": _series_thumbnail_api_url(item.id),
         "popularity": item.popularity,
         "content_type": item.content_type,
         "is_movie": item.content_type == "movie",

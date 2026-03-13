@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
                     description="Autocreated demo video entry",
                     duration_seconds=900,
                     total_segments=150,
-                    available_qualities=["360p", "480p", "720p", "1080p"],
+                    available_qualities=["320p", "480p", "720p"],
                     storage_path="/videos/1",
                 )
             )

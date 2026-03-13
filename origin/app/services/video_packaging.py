@@ -32,15 +32,13 @@ async def encode_video_to_dash(raw_path: str, output_dir: str) -> dict:
 
     ffmpeg_cmd = [
         "ffmpeg", "-y", "-i", raw_path,
-        "-map", "0:v", "-map", "0:v", "-map", "0:v", "-map", "0:v",
-        "-filter:v:0", "scale=640:360",
-        "-filter:v:1", "scale=960:540",
+        "-map", "0:v", "-map", "0:v", "-map", "0:v",
+        "-filter:v:0", "scale=320:180",
+        "-filter:v:1", "scale=854:480",
         "-filter:v:2", "scale=1280:720",
-        "-filter:v:3", "scale=1920:1080",
-        "-b:v:0", "400k", "-maxrate:v:0", "428k", "-bufsize:v:0", "600k",
+        "-b:v:0", "250k", "-maxrate:v:0", "267k", "-bufsize:v:0", "375k",
         "-b:v:1", "800k", "-maxrate:v:1", "856k", "-bufsize:v:1", "1200k",
         "-b:v:2", "1500k", "-maxrate:v:2", "1605k", "-bufsize:v:2", "2250k",
-        "-b:v:3", "3000k", "-maxrate:v:3", "3210k", "-bufsize:v:3", "4500k",
         "-c:v", "libx264", "-preset", "fast", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
         "-use_timeline", "1", "-use_template", "1", "-seg_duration", "4",
     ]
