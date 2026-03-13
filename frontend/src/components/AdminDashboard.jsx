@@ -556,24 +556,6 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
       </div>
 
       {!isContentMode && (
-        <div className="admin-panel" style={{ padding: 16, marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>Content tools moved to dedicated tab</div>
-            <div style={{ marginTop: 4, fontSize: 12, color: '#aaa' }}>
-              Use Content Manager for series, episodes, uploads, and thumbnails.
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => onOpenContentManager?.()}
-            style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 12px', fontWeight: 700, cursor: 'pointer' }}
-          >
-            Open Content Manager
-          </button>
-        </div>
-      )}
-
-      {!isContentMode && (
         <>
           {/* Summary */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 24 }}>
@@ -672,39 +654,8 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                 </button>
               </div>
 
-              <div style={{ marginBottom: 14, padding: 10, border: '1px solid #2a2a2a', borderRadius: 6, background: '#111' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                  <div style={{ fontSize: 12, color: '#bbb' }}>
-                    One-click catalog seed (100 movies + 40 series + episodes)
-                  </div>
-                  <button
-                    onClick={startSeedCatalog}
-                    disabled={seedStatus?.running}
-                    style={{
-                      background: seedStatus?.running ? '#6a0a10' : '#e50914',
-                      color: '#fff', border: 'none', borderRadius: 4,
-                      padding: '7px 12px', cursor: seedStatus?.running ? 'not-allowed' : 'pointer',
-                      fontSize: 12, fontWeight: 700,
-                    }}
-                  >
-                    {seedStatus?.running ? 'Seeding…' : 'Seed Catalog'}
-                  </button>
-                </div>
-
-                {(seedStatus || seedMsg) && (
-                  <div style={{ marginTop: 8, fontSize: 11, color: '#999', lineHeight: 1.6 }}>
-                    {seedMsg && <div>{seedMsg}</div>}
-                    {seedStatus?.started_at && <div>Started: {new Date(seedStatus.started_at).toLocaleString()}</div>}
-                    {seedStatus?.finished_at && <div>Finished: {new Date(seedStatus.finished_at).toLocaleString()}</div>}
-                    {seedStatus?.success === true && <div style={{ color: '#46d369' }}>Success: {seedStatus.output || 'done'}</div>}
-                    {seedStatus?.success === false && <div style={{ color: '#e50914' }}>Error: {seedStatus.error || 'failed'}</div>}
-                    {seedStatus?.running && <div style={{ color: '#f5a623' }}>Running in background...</div>}
-                  </div>
-                )}
-              </div>
-
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 12, color: '#aaa' }}>Select any title to manage episodes, videos, and thumbnails.</div>
+                <div style={{ fontSize: 12, color: '#aaa' }}>Select any title to manage episodes and thumbnails.</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
                     value={seriesSearch}
@@ -761,85 +712,6 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
 
               {uploadMsg && <div style={{ marginTop: 10, fontSize: 12, color: '#f5a623' }}>{uploadMsg}</div>}
             </div>
-      </Section>}
-
-      {isContentMode && <Section title="Video & Thumbnail Manager">
-        <div className="admin-panel" style={{ padding: 14 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, marginBottom: 10 }}>
-            <input
-              value={videoUploadTitle}
-              onChange={e => setVideoUploadTitle(e.target.value)}
-              placeholder="Video title (optional)"
-              style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px' }}
-            />
-            <input
-              value={videoUploadDesc}
-              onChange={e => setVideoUploadDesc(e.target.value)}
-              placeholder="Video description (optional)"
-              style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px' }}
-            />
-            <button
-              type="button"
-              onClick={uploadNewVideo}
-              style={{ background: '#e50914', color: '#fff', border: 'none', borderRadius: 4, padding: '8px 12px', cursor: 'pointer', fontWeight: 700 }}
-            >
-              Upload Video
-            </button>
-          </div>
-          <div style={{ marginBottom: 12 }}>
-            <input
-              type="file"
-              accept="video/mp4"
-              onChange={e => setVideoUploadFile(e.target.files?.[0] || null)}
-              style={{ color: '#aaa' }}
-            />
-          </div>
-
-          <div style={{ maxHeight: 300, overflow: 'auto', borderTop: '1px solid #2a2a2a', paddingTop: 10 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr>
-                  {['ID', 'Title', 'Description', 'Thumbnail', 'Actions'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', color: '#777', padding: '6px 8px', borderBottom: '1px solid #2a2a2a' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {videos.map(v => (
-                  <tr key={v.id}>
-                    <td style={{ padding: '8px' }}>{v.id}</td>
-                    <td style={{ padding: '8px' }}>{v.title}</td>
-                    <td style={{ padding: '8px', color: '#999' }}>{v.description || '—'}</td>
-                    <td style={{ padding: '8px' }}>
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        onChange={e => setVideoThumbFileById(prev => ({ ...prev, [v.id]: e.target.files?.[0] || null }))}
-                        style={{ color: '#aaa' }}
-                      />
-                    </td>
-                    <td style={{ padding: '8px' }}>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button onClick={() => uploadVideoThumbnailById(v.id)} style={{ background: '#333', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
-                          Upload Thumb
-                        </button>
-                        <button onClick={() => deleteVideoThumbnailById(v.id)} style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
-                          Delete Thumb
-                        </button>
-                        <button onClick={() => editVideo(v)} style={{ background: '#1f1f1f', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
-                          Edit
-                        </button>
-                        <button onClick={() => deleteVideo(v)} style={{ background: '#6a0a10', color: '#fff', border: '1px solid #8f121b', borderRadius: 4, padding: '6px 8px', cursor: 'pointer' }}>
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
       </Section>}
 
       {isContentMode && modalSeries && (
