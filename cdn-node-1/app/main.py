@@ -174,25 +174,27 @@ async def serve_segment(video_id: int, quality: str, segment_number: int):
 async def serve_dash_file(video_id: int, filename: str):
     """Serve any DASH file (init-stream*.m4s, chunk-stream*.m4s) with CDN caching."""
     global _cache_hits, _cache_misses, _active_reqs
-    safe_name = os.path.basename(filename)
+    normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
+    if normalized.startswith("../") or normalized == "..":
+        raise HTTPException(status_code=400, detail="Invalid filename")
     _active_reqs += 1
     try:
-        cache_path = os.path.join(CACHE_PATH, str(video_id), safe_name)
+        cache_path = os.path.join(CACHE_PATH, str(video_id), normalized)
         if os.path.exists(cache_path):
             _cache_hits += 1
-            mt = "video/mp4" if safe_name.endswith(".m4s") else "application/octet-stream"
+            mt = "video/mp4" if normalized.endswith(".m4s") else "application/octet-stream"
             return FileResponse(cache_path, media_type=mt)
 
         _cache_misses += 1
         async with httpx.AsyncClient() as client:
             r = await client.get(
-                f"{ORIGIN_URL}/api/videos/{video_id}/{safe_name}", timeout=30.0
+                f"{ORIGIN_URL}/api/videos/{video_id}/{normalized}", timeout=30.0
             )
             if r.status_code == 200:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 async with aiofiles.open(cache_path, "wb") as f:
                     await f.write(r.content)
-                mt = "video/mp4" if safe_name.endswith(".m4s") else "application/octet-stream"
+                mt = "video/mp4" if normalized.endswith(".m4s") else "application/octet-stream"
                 return Response(content=r.content, media_type=mt)
 
         raise HTTPException(status_code=404, detail="File not found")

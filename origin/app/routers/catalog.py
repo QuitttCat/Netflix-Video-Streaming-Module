@@ -1,6 +1,5 @@
 import os
 import asyncio
-from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
@@ -13,6 +12,12 @@ from pydantic import BaseModel
 from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..models import Series, Season, Episode, MediaTrack, User, Video
+from ..services.s3_media import S3MediaService
+from ..services.video_packaging import (
+    build_video_hierarchy_prefix,
+    encode_and_upload_dash_to_s3,
+    encode_video_to_dash,
+)
 
 router = APIRouter()
 VIDEO_STORAGE_PATH = os.getenv("VIDEO_STORAGE_PATH", "/videos")
@@ -313,22 +318,77 @@ async def _upload_episode_video_impl(
         db.add(video)
         await db.flush()
 
-    raw_path = os.path.join(VIDEO_STORAGE_PATH, str(video.id), "raw.mp4")
-    os.makedirs(os.path.dirname(raw_path), exist_ok=True)
-    async with aiofiles.open(raw_path, "wb") as f:
-        await f.write(await file.read())
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    try:
-        encode_result = await encode_video_to_dash(video.id, raw_path)
-    except Exception as e:
-        episode.video_id = video.id
-        episode.playable = False
-        await db.commit()
-        raise HTTPException(status_code=400, detail=f"Upload saved but encoding failed: {str(e)}")
+    storage_backend = (os.getenv("VIDEO_STORAGE_BACKEND", "s3") or "s3").lower()
+
+    season_result = await db.execute(select(Season).where(Season.id == episode.season_id))
+    season = season_result.scalar_one_or_none()
+    series_result = await db.execute(select(Series).where(Series.id == episode.series_id))
+    series = series_result.scalar_one_or_none()
+
+    if storage_backend == "s3":
+        s3 = S3MediaService()
+        missing = s3.validate_configuration()
+        if missing:
+            raise HTTPException(
+                status_code=500,
+                detail=f"S3 storage is selected but missing env vars: {', '.join(missing)}",
+            )
+
+        s3_prefix = build_video_hierarchy_prefix(
+            video_id=video.id,
+            episode=episode,
+            season_number=season.season_number if season else None,
+            series_content_type=series.content_type if series else "series",
+        )
+
+        try:
+            encode_result = await encode_and_upload_dash_to_s3(
+                raw_bytes=file_bytes,
+                raw_filename=file.filename or "raw.mp4",
+                video_id=video.id,
+                s3_prefix=s3_prefix,
+                s3_service=s3,
+            )
+        except Exception as e:
+            episode.video_id = video.id
+            episode.playable = False
+            await db.commit()
+            raise HTTPException(status_code=400, detail=f"Upload saved but S3 chunking/encoding failed: {str(e)}")
+
+        video.storage_path = f"s3://{s3.bucket_name}/{encode_result['s3_prefix']}"
+        output_meta = {
+            "storage_backend": "s3",
+            "s3_prefix": encode_result["s3_prefix"],
+            "manifest_key": encode_result["manifest_key"],
+            "uploaded_files": len(encode_result["uploaded_files"]),
+        }
+    else:
+        raw_path = os.path.join(VIDEO_STORAGE_PATH, str(video.id), "raw.mp4")
+        os.makedirs(os.path.dirname(raw_path), exist_ok=True)
+        async with aiofiles.open(raw_path, "wb") as f:
+            await f.write(file_bytes)
+
+        out_dir = os.path.join(VIDEO_STORAGE_PATH, str(video.id))
+        try:
+            encode_result = await encode_video_to_dash(raw_path, out_dir)
+        except Exception as e:
+            episode.video_id = video.id
+            episode.playable = False
+            await db.commit()
+            raise HTTPException(status_code=400, detail=f"Upload saved but encoding failed: {str(e)}")
+
+        video.storage_path = f"/videos/{video.id}"
+        output_meta = {
+            "storage_backend": "local",
+            "raw_path": raw_path,
+        }
 
     video.duration_seconds = encode_result["duration_seconds"]
     video.total_segments = encode_result["total_segments"]
-    video.storage_path = f"/videos/{video.id}"
     video.available_qualities = ["360p", "480p", "720p", "1080p"]
 
     episode.video_id = video.id
@@ -341,91 +401,11 @@ async def _upload_episode_video_impl(
         "ok": True,
         "episode_id": episode.id,
         "video_id": video.id,
-        "raw_path": raw_path,
         "duration_seconds": video.duration_seconds,
         "total_segments": video.total_segments,
         "message": "Uploaded and encoded successfully.",
+        **output_meta,
     }
-
-
-async def encode_video_to_dash(video_id: int, raw_path: str) -> dict:
-    out_dir = Path(VIDEO_STORAGE_PATH) / str(video_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = out_dir / "manifest.mpd"
-    has_audio = await detect_audio_stream(raw_path)
-
-    ffmpeg_cmd = [
-        "ffmpeg", "-y", "-i", raw_path,
-        "-filter_complex",
-        "[0:v]split=4[v1][v2][v3][v4];"
-        "[v1]scale=640:360[v360];"
-        "[v2]scale=854:480[v480];"
-        "[v3]scale=1280:720[v720];"
-        "[v4]scale=1920:1080[v1080]",
-        "-map", "[v360]", "-b:v:0", "400k", "-maxrate:v:0", "428k", "-bufsize:v:0", "600k",
-        "-map", "[v480]", "-b:v:1", "800k", "-maxrate:v:1", "856k", "-bufsize:v:1", "1200k",
-        "-map", "[v720]", "-b:v:2", "1500k", "-maxrate:v:2", "1605k", "-bufsize:v:2", "2250k",
-        "-map", "[v1080]", "-b:v:3", "3000k", "-maxrate:v:3", "3210k", "-bufsize:v:3", "4500k",
-        "-c:v", "libx264", "-preset", "fast", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
-        "-use_timeline", "1", "-use_template", "1", "-seg_duration", "4",
-    ]
-
-    if has_audio:
-        ffmpeg_cmd += [
-            "-map", "0:a",
-            "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-            "-adaptation_sets", "id=0,streams=v id=1,streams=a",
-        ]
-    else:
-        ffmpeg_cmd += [
-            "-an",
-            "-adaptation_sets", "id=0,streams=v",
-        ]
-
-    ffmpeg_cmd += ["-f", "dash", str(manifest_path)]
-
-    proc = await asyncio.create_subprocess_exec(
-        *ffmpeg_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode("utf-8", errors="ignore")[-600:])
-
-    ffprobe_cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", raw_path,
-    ]
-    probe = await asyncio.create_subprocess_exec(
-        *ffprobe_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await probe.communicate()
-    duration_raw = (stdout.decode("utf-8", errors="ignore") or "0").strip()
-    duration_seconds = int(float(duration_raw)) if duration_raw else 0
-
-    total_segments = len(list(out_dir.glob("*.m4s")))
-    return {
-        "duration_seconds": max(1, duration_seconds),
-        "total_segments": total_segments,
-    }
-
-
-async def detect_audio_stream(raw_path: str) -> bool:
-    probe = await asyncio.create_subprocess_exec(
-        "ffprobe",
-        "-v", "error",
-        "-select_streams", "a",
-        "-show_entries", "stream=index",
-        "-of", "csv=p=0",
-        raw_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await probe.communicate()
-    text = stdout.decode("utf-8", errors="ignore").strip()
-    return bool(text)
 
 
 def serialize_series(item: Optional[Series]):

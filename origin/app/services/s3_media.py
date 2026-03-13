@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import boto3
@@ -54,6 +55,27 @@ class S3MediaService:
             "s3_uri": f"s3://{self.bucket_name}/{key}",
             "public_url": self.object_url(key),
         }
+
+    def upload_file(self, local_path: str, key: str, content_type: str = "application/octet-stream") -> dict:
+        with open(local_path, "rb") as f:
+            self._s3.upload_fileobj(
+                f,
+                self.bucket_name,
+                key,
+                ExtraArgs={"ContentType": content_type},
+            )
+        return {
+            "bucket": self.bucket_name,
+            "key": key,
+            "s3_uri": f"s3://{self.bucket_name}/{key}",
+            "public_url": self.object_url(key),
+        }
+
+    def get_object_bytes(self, key: str) -> tuple[bytes, str]:
+        resp = self._s3.get_object(Bucket=self.bucket_name, Key=key)
+        body = resp["Body"].read()
+        content_type = resp.get("ContentType", "application/octet-stream")
+        return body, content_type
 
     def generate_presigned_upload_url(
         self,
@@ -118,6 +140,35 @@ def build_media_key(media_type: str, owner_id: str, file_name: str, now: Optiona
     safe_name = sanitize_file_name(file_name)
     timestamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
     return f"{mt}/{owner}/{timestamp}-{safe_name}"
+
+
+def join_key(prefix: str, name: str) -> str:
+    left = (prefix or "").strip("/")
+    right = (name or "").lstrip("/")
+    if not left:
+        return right
+    return f"{left}/{right}"
+
+
+def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
+    if not s3_uri or not s3_uri.startswith("s3://"):
+        raise ValueError("Invalid s3 uri")
+    value = s3_uri[5:]
+    bucket, _, key = value.partition("/")
+    if not bucket or not key:
+        raise ValueError("Invalid s3 uri")
+    return bucket, key
+
+
+def infer_content_type(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".mpd":
+        return "application/dash+xml"
+    if suffix in {".m4s", ".mp4"}:
+        return "video/mp4"
+    if suffix == ".vtt":
+        return "text/vtt"
+    return "application/octet-stream"
 
 
 def is_s3_error(exc: Exception) -> bool:
