@@ -97,8 +97,26 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
     featured_result = await db.execute(select(Series).where(Series.featured == True).limit(1))
     featured = featured_result.scalar_one_or_none()
 
-    trending_result = await db.execute(select(Series).order_by(Series.popularity.desc()).limit(20))
-    trending = trending_result.scalars().all()
+    trending_result = await db.execute(select(Series).order_by(Series.popularity.desc()).limit(200))
+    trending_raw = trending_result.scalars().all()
+
+    uploaded_counts_result = await db.execute(
+        select(Episode.series_id)
+        .where(Episode.playable == True, Episode.video_id.is_not(None))
+    )
+    uploaded_counts = {}
+    for (sid,) in uploaded_counts_result.all():
+        uploaded_counts[sid] = uploaded_counts.get(sid, 0) + 1
+
+    trending = sorted(
+        trending_raw,
+        key=lambda s: (
+            1 if uploaded_counts.get(s.id, 0) > 0 else 0,
+            uploaded_counts.get(s.id, 0),
+            float(s.popularity or 0.0),
+        ),
+        reverse=True,
+    )[:20]
 
     series_result = await db.execute(select(Series).where(Series.content_type == "series").order_by(Series.popularity.desc()).limit(20))
     series_items = series_result.scalars().all()
