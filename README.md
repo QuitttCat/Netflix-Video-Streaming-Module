@@ -15,6 +15,7 @@ cd Netflix-Video-Streaming-Module
 
 ### 2) Provide shared `.env` values (required for seeded uploaded media)
 
+
 Copy the template and fill values:
 
 ```bash
