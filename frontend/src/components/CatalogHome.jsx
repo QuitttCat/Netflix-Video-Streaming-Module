@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+
+const TRAILER_CACHE_NAME = 'trailer-preview-v1'
 
 export default function CatalogHome({ token, onPlayEpisode, onPlayVideo, onPlaySeries }) {
   const [data, setData] = useState(null)
@@ -238,6 +240,8 @@ function Row({ title, items, type, onPlayEpisode, onPlayVideo, onPlaySeries, onO
           <Card
             key={`${title}-${idx}`}
             item={item}
+            type={type}
+            edge={idx === 0 ? 'left' : (idx === list.length - 1 ? 'right' : 'middle')}
             onClick={() => {
               if (type === 'episode') onPlayEpisode(item.episode_id)
               if (type === 'video') onPlayVideo(item)
@@ -375,17 +379,204 @@ function SeriesEpisodesModal({ series, episodes, loading, message, onClose, onPl
   )
 }
 
-function Card({ item, onClick, clickable }) {
+function normalizeHostUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl)
+    if (['origin', 'cdn-node-1', 'cdn-node-2', 'cdn-node-3'].includes(parsed.hostname)) {
+      parsed.hostname = 'localhost'
+    }
+    return parsed.toString()
+  } catch {
+    return rawUrl
+  }
+}
+
+function toAbsoluteUrl(value) {
+  try {
+    return new URL(value, window.location.origin).toString()
+  } catch {
+    return value
+  }
+}
+
+async function readTrailerFromLocalCache(originUrl) {
+  if (!('caches' in window)) return null
+  const cache = await caches.open(TRAILER_CACHE_NAME)
+  const req = new Request(toAbsoluteUrl(originUrl), { method: 'GET' })
+  const hit = await cache.match(req)
+  if (!hit || !hit.ok) return null
+  return await hit.blob()
+}
+
+async function writeTrailerToLocalCache(originUrl, blob, contentType = 'video/mp4') {
+  if (!('caches' in window)) return
+  const cache = await caches.open(TRAILER_CACHE_NAME)
+  const req = new Request(toAbsoluteUrl(originUrl), { method: 'GET' })
+  const res = new Response(blob, {
+    status: 200,
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=86400',
+    },
+  })
+  await cache.put(req, res)
+}
+
+async function fetchTrailerBlob(url) {
+  const r = await fetch(url, { method: 'GET', cache: 'no-store' })
+  if (!r.ok) return null
+  const blob = await r.blob()
+  const contentType = r.headers.get('content-type') || blob.type || 'video/mp4'
+  return { blob, contentType }
+}
+
+async function resolveTrailerCdnUrl(seriesId, trailer) {
+  if (!seriesId || !trailer?.cdn_path) return null
+  try {
+    const r = await fetch(`/api/cdn/best-node?videoId=1&clientRegion=dhaka`)
+    const payload = await r.json()
+    if (!r.ok || !payload?.url) return null
+    const base = normalizeHostUrl(payload.url).replace(/\/$/, '')
+    return `${base}${trailer.cdn_path}`
+  } catch {
+    return null
+  }
+}
+
+function Card({ item, type, edge = 'middle', onClick, clickable }) {
   const [hover, setHover] = useState(false)
+  const [trailerState, setTrailerState] = useState('Idle')
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [showPreview, setShowPreview] = useState(false)
+  const [previewReady, setPreviewReady] = useState(false)
+  const hoverTimerRef = useRef(null)
+  const videoRef = useRef(null)
+  const previewRequestIdRef = useRef(0)
+  const previewObjectUrlRef = useRef('')
   const imageUrl = item.thumbnail_url || item.poster_url || item.backdrop_url || '/default-thumbnail.svg'
+  const trailer = item.preview_trailer || null
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+      if (previewObjectUrlRef.current) {
+        URL.revokeObjectURL(previewObjectUrlRef.current)
+        previewObjectUrlRef.current = ''
+      }
+    }
+  }, [])
+
+  const resetPreview = () => {
+    previewRequestIdRef.current += 1
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    const v = videoRef.current
+    if (v) {
+      v.pause()
+      v.currentTime = 0
+    }
+    if (previewObjectUrlRef.current) {
+      URL.revokeObjectURL(previewObjectUrlRef.current)
+      previewObjectUrlRef.current = ''
+    }
+    setShowPreview(false)
+    setPreviewReady(false)
+    setPreviewUrl('')
+    setTrailerState('Idle')
+  }
+
+  const startPreviewFlow = async () => {
+    if (type !== 'series' || !trailer?.available) return
+    const reqId = ++previewRequestIdRef.current
+    setTrailerState('TrailerIdLookup')
+    const streamUrl = toAbsoluteUrl(trailer.stream_url)
+    if (!streamUrl) {
+      setTrailerState('Cancelled')
+      return
+    }
+
+    setTrailerState('TrailerLoadRequested')
+    setTrailerState('CacheDecision')
+
+    try {
+      const localBlob = await readTrailerFromLocalCache(streamUrl)
+      if (reqId !== previewRequestIdRef.current) return
+      if (localBlob) {
+        if (previewObjectUrlRef.current) URL.revokeObjectURL(previewObjectUrlRef.current)
+        previewObjectUrlRef.current = URL.createObjectURL(localBlob)
+        setPreviewUrl(previewObjectUrlRef.current)
+        setShowPreview(true)
+        setPreviewReady(false)
+        setTrailerState('PreviewPlaying')
+        return
+      }
+
+      setTrailerState('NetworkFetch')
+      const cdnUrl = await resolveTrailerCdnUrl(item.series_id, trailer)
+      if (reqId !== previewRequestIdRef.current) return
+
+      let fromNetwork = null
+      if (cdnUrl) {
+        fromNetwork = await fetchTrailerBlob(cdnUrl)
+      }
+      if (!fromNetwork) {
+        fromNetwork = await fetchTrailerBlob(streamUrl)
+      }
+      if (!fromNetwork) {
+        setShowPreview(false)
+        setTrailerState('Cancelled')
+        return
+      }
+
+      await writeTrailerToLocalCache(streamUrl, fromNetwork.blob, fromNetwork.contentType)
+      if (reqId !== previewRequestIdRef.current) return
+      if (previewObjectUrlRef.current) URL.revokeObjectURL(previewObjectUrlRef.current)
+      previewObjectUrlRef.current = URL.createObjectURL(fromNetwork.blob)
+      setPreviewUrl(previewObjectUrlRef.current)
+      setShowPreview(true)
+      setPreviewReady(false)
+      setTrailerState('PreviewPlaying')
+    } catch {
+      if (reqId !== previewRequestIdRef.current) return
+      setShowPreview(false)
+      setPreviewReady(false)
+      setTrailerState('Cancelled')
+    }
+  }
+
+  const handleHoverStart = () => {
+    setHover(true)
+    if (type !== 'series' || !trailer?.available) return
+    setTrailerState('Hovering')
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    hoverTimerRef.current = setTimeout(() => {
+      startPreviewFlow()
+    }, 2000)
+  }
+
+  const handleHoverEnd = () => {
+    setHover(false)
+    if (trailerState !== 'Idle') setTrailerState('Cancelled')
+    resetPreview()
+  }
+
+  const hoverTransform = (() => {
+    if (!hover) return 'scale(1)'
+    if (type !== 'series') return 'scale(1.08)'
+    if (edge === 'left') return 'translateX(18px) scale(1.16)'
+    if (edge === 'right') return 'translateX(-18px) scale(1.16)'
+    return 'scale(1.16)'
+  })()
 
   return (
     <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      onMouseEnter={handleHoverStart}
+      onMouseLeave={handleHoverEnd}
       onClick={clickable ? onClick : undefined}
       className="nf-card"
-      style={{ cursor: clickable ? 'pointer' : 'default', transform: hover ? 'scale(1.08)' : 'scale(1)' }}
+      style={{ cursor: clickable ? 'pointer' : 'default', transform: hoverTransform, zIndex: hover ? 40 : 'auto', position: 'relative' }}
     >
       <div
         className="nf-card-media"
@@ -396,6 +587,33 @@ function Card({ item, onClick, clickable }) {
           backgroundColor: '#333',
         }}
       >
+        {showPreview && previewUrl && (
+          <video
+            ref={videoRef}
+            src={previewUrl}
+            muted
+            autoPlay
+            loop
+            playsInline
+            onCanPlay={() => {
+              setPreviewReady(true)
+              setTrailerState('PreviewPlaying')
+              sessionStorage.setItem(`trailer-cache:${item.series_id}`, '1')
+            }}
+            onError={() => {
+              setPreviewReady(false)
+              if (trailer?.stream_url && previewUrl !== trailer.stream_url) {
+                setPreviewUrl(trailer.stream_url)
+                return
+              }
+              setShowPreview(false)
+              setTrailerState('Cancelled')
+            }}
+            className="trailer-preview-video"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: previewReady ? 1 : 0 }}
+          />
+        )}
+
         <div className="nf-card-overlay-play"><span>▶</span></div>
 
         {!imageUrl && (
@@ -414,6 +632,19 @@ function Card({ item, onClick, clickable }) {
           }}>
             DEMO ONLY
           </span>
+        )}
+
+        {type === 'series' && trailer?.available && trailerState === 'Hovering' && (
+          <span style={{ position: 'absolute', left: 10, top: 10, background: 'rgba(0,0,0,0.76)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 999, padding: '4px 8px', fontSize: 10, fontWeight: 700, letterSpacing: 0.2 }}>
+            Preview in 2s
+          </span>
+        )}
+
+        {type === 'series' && showPreview && (
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '8px 10px', background: 'linear-gradient(to top, rgba(0,0,0,0.86), rgba(0,0,0,0))', display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: previewReady ? 1 : 0, transition: 'opacity 280ms ease' }}>
+            {/* <span style={{ fontSize: 11, color: '#fff', fontWeight: 700 }}>Muted Preview</span> */}
+            <span style={{ fontSize: 11, color: '#ddd' }}>🔇</span>
+          </div>
         )}
       </div>
       <div style={{ padding: 12 }}>

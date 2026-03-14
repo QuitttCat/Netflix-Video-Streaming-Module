@@ -81,6 +81,13 @@ This starts 7 services: PostgreSQL, Redis, Origin Server (FastAPI), 3 CDN Edge N
 
 Open **http://localhost** in your browser.
 
+pgAdmin is available at **http://localhost:5050**.
+
+Default login values:
+
+- `PGADMIN_DEFAULT_EMAIL` from `.env` (default `admin@netflix.com`)
+- `PGADMIN_DEFAULT_PASSWORD` from `.env` (default `admin123`)
+
 ## Team Seed Snapshot (No Manual Reseed Needed)
 
 This repo now includes `seed_data.sql` generated from a real working database (series, seasons, episodes, tracks, users, videos).
@@ -185,6 +192,26 @@ When the playhead hit 90% of the episode, the next-episode prefetch triggered an
 We also checked the database directly and confirmed 5 playback sessions and 63+ buffer events were recorded with zone and quality data.
 
 Everything worked as planned.
+
+## Trailer Preview (Milky Subway)
+
+This project now supports series trailer linkage with CDN-cached preview playback.
+
+- DB table: `series_trailers`
+- Public trailer metadata: `GET /api/catalog/series/{series_id}/trailer`
+- Public trailer stream: `GET /api/catalog/series/{series_id}/trailer/stream.mp4`
+- CDN trailer stream: `GET http://localhost:3001/trailers/{series_id}/stream.mp4` (and same on ports 3002/3003)
+
+Admin upload/link endpoints:
+
+- `POST /api/catalog/admin/series/{series_id}/trailer`
+- `DELETE /api/catalog/admin/series/{series_id}/trailer`
+
+In UI:
+
+- Admin -> Content -> open a series modal -> upload trailer file and link it.
+- Home catalog series cards now start muted trailer previews after 2 seconds hover.
+- First trailer request is CDN cache miss, repeated requests become cache hits.
 
 ## Stopping
 

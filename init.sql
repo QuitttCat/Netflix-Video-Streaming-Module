@@ -131,6 +131,26 @@ CREATE TABLE IF NOT EXISTS video_progress (
     UNIQUE(user_id, video_id)
 );
 
+CREATE TABLE IF NOT EXISTS series_trailers (
+    id               SERIAL PRIMARY KEY,
+    series_id        INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    title            VARCHAR(255),
+    storage_path     VARCHAR(1024) NOT NULL,
+    content_type     VARCHAR(128) DEFAULT 'video/mp4',
+    file_size_bytes  BIGINT DEFAULT 0,
+    is_active        BOOLEAN DEFAULT TRUE,
+    created_by_user_id INTEGER REFERENCES users(id),
+    created_at       TIMESTAMP DEFAULT NOW(),
+    updated_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_series_trailers_series_active
+ON series_trailers(series_id)
+WHERE is_active = TRUE;
+
+CREATE INDEX IF NOT EXISTS ix_series_trailers_series_id
+ON series_trailers(series_id);
+
 -- Load repository seed generated from a real working database.
 \i /seed_data.sql
 

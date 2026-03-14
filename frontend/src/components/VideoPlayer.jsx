@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import dashjs from 'dashjs'
+import { FaCompress, FaExpand, FaPause, FaPlay, FaVolumeMute, FaVolumeUp } from 'react-icons/fa'
+import { MdOutlineForward10, MdOutlineReplay10 } from 'react-icons/md'
 import BufferBar from './BufferBar.jsx'
 
-const QUALITIES  = ['360p', '480p', '720p', '1080p']
-const MAX_BUF    = 60
-const RESERVOIR  = 10
-const CUSHION_T  = 45
+const QUALITIES = ['360p', '480p', '720p', '1080p']
+const MAX_BUF = 60
+const RESERVOIR = 10
+const CUSHION_T = 45
 
 function bba(buf) {
   if (buf <= RESERVOIR) return { quality: '360p', zone: 'reservoir' }
@@ -16,10 +18,10 @@ function bba(buf) {
 
 // Network condition presets for demo (simulated throughput caps in kbps)
 const NET_PRESETS = {
-  good:    { label: 'Good (3 Mbps)',    cap: 3000,  color: '#46d369' },
-  medium:  { label: 'Medium (800 kbps)', cap: 800,   color: '#f5a623' },
-  poor:    { label: 'Poor (200 kbps)',   cap: 200,   color: '#e50914' },
-  offline: { label: 'Offline (0)',       cap: 0,     color: '#ff0000' },
+  good: { label: 'Good (3 Mbps)', cap: 3000, color: '#46d369' },
+  medium: { label: 'Medium (800 kbps)', cap: 800, color: '#f5a623' },
+  poor: { label: 'Poor (200 kbps)', cap: 200, color: '#e50914' },
+  offline: { label: 'Offline (0)', cap: 0, color: '#ff0000' },
 }
 
 const LANGUAGE_LABELS = {
@@ -51,28 +53,28 @@ function pickDefaultSubtitleTrack(tracks) {
 }
 
 export default function VideoPlayer({ session, video, user, token, onPlayNextEpisode }) {
-  const videoRef  = useRef(null)
+  const videoRef = useRef(null)
   const playerRef = useRef(null)
   const resumeAppliedRef = useRef(false)
   const lastProgressSavedAtRef = useRef(0)
-  const [playing,     setPlaying]     = useState(false)
-  const [muted,       setMuted]       = useState(false)
-  const [volume,      setVolume]      = useState(1)
+  const [playing, setPlaying] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [volume, setVolume] = useState(1)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [durationReal, setDurationReal] = useState(0)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
-  const [zone,        setZone]        = useState('reservoir')
-  const [quality,     setQuality]     = useState('360p')
-  const [playhead,    setPlayhead]    = useState(0)
-  const [priority,    setPriority]    = useState('video')
-  const [prefetch,    setPrefetch]    = useState(null)
+  const [zone, setZone] = useState('reservoir')
+  const [quality, setQuality] = useState('360p')
+  const [playhead, setPlayhead] = useState(0)
+  const [priority, setPriority] = useState('video')
+  const [prefetch, setPrefetch] = useState(null)
   const [prefetchStatus, setPrefetchStatus] = useState(null)
   const [prefetchPolling, setPrefetchPolling] = useState(false)
-  const [recQuality,  setRecQuality]  = useState(null)
-  const [dashReady,   setDashReady]   = useState(false)
-  const [netMode,     setNetMode]     = useState('good')
-  const [simBuf,      setSimBuf]      = useState(0)  // simulated buffer for BBA demo
+  const [recQuality, setRecQuality] = useState(null)
+  const [dashReady, setDashReady] = useState(false)
+  const [netMode, setNetMode] = useState('good')
+  const [simBuf, setSimBuf] = useState(0)  // simulated buffer for BBA demo
   const [autoNextCountdown, setAutoNextCountdown] = useState(null)
   const [audioOptions, setAudioOptions] = useState([])
   const [selectedAudioIndex, setSelectedAudioIndex] = useState('')
@@ -393,7 +395,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const time = player.time() || 0
         setPlayhead(time)
         setPlaying(!videoRef.current?.paused)
-      } catch (_) {}
+      } catch (_) { }
     }, 500)
     return () => clearInterval(t)
   }, [dashReady])
@@ -411,21 +413,21 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     if (!session?.session_id) return
     try {
       const r = await fetch('/api/buffering/report', {
-        method:  'POST',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          session_id:             session.session_id,
-          video_id:               video.id,
+          session_id: session.session_id,
+          video_id: video.id,
           current_buffer_seconds: simBuf,
-          current_quality:        quality,
-          playhead_position:      playhead,
-          segments_buffered:      Array.from({ length: 5 }, (_, i) => Math.floor(playhead / 4) + i),
-          download_speed_kbps:    preset.cap,
+          current_quality: quality,
+          playhead_position: playhead,
+          segments_buffered: Array.from({ length: 5 }, (_, i) => Math.floor(playhead / 4) + i),
+          download_speed_kbps: preset.cap,
         }),
       })
       const rec = await r.json()
       setRecQuality(rec.recommended_quality)
-    } catch (_) {}
+    } catch (_) { }
   }, [simBuf, quality, playhead, session, video, preset])
 
   const savePlaybackProgress = useCallback(async (force = false) => {
@@ -447,7 +449,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           playhead_position: playhead,
         }),
       })
-    } catch (_) {}
+    } catch (_) { }
   }, [session?.session_id, video?.id, user?.username, token, playhead])
 
   useEffect(() => {
@@ -478,7 +480,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           headers: {
             Authorization: `Bearer ${token}`,
           },
-        }).catch(() => {})
+        }).catch(() => { })
       }
     }
   }, [savePlaybackProgress, session?.session_id, token])
@@ -754,10 +756,18 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff' }}>
-                <CtlBtn onClick={handlePlayPause}>{playing ? '❚❚' : '▶'}</CtlBtn>
-                <CtlBtn onClick={() => seekBy(-10)}>↺ 10</CtlBtn>
-                <CtlBtn onClick={() => seekBy(10)}>10 ↻</CtlBtn>
-                <CtlBtn onClick={() => setMuted(v => !v)}>{muted || volume === 0 ? '🔇' : '🔊'}</CtlBtn>
+                <CtlBtn onClick={handlePlayPause} ariaLabel={playing ? 'Pause' : 'Play'}>
+                  {playing ? <FaPause size={13} /> : <FaPlay size={13} style={{ marginLeft: 2 }} />}
+                </CtlBtn>
+                <CtlBtn onClick={() => seekBy(-10)} ariaLabel="Back 10 seconds">
+                  <MdOutlineReplay10 size={25} color="#fff" />
+                </CtlBtn>
+                <CtlBtn onClick={() => seekBy(10)} ariaLabel="Forward 10 seconds">
+                  <MdOutlineForward10 size={25} color="#fff" />
+                </CtlBtn>
+                <CtlBtn onClick={() => setMuted(v => !v)} ariaLabel={muted || volume === 0 ? 'Unmute' : 'Mute'}>
+                  {muted || volume === 0 ? <FaVolumeMute size={13} /> : <FaVolumeUp size={13} />}
+                </CtlBtn>
                 <input
                   type="range"
                   min="0"
@@ -809,7 +819,9 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
                       <option key={r} value={r}>{r}x</option>
                     ))}
                   </select>
-                  <CtlBtn onClick={toggleFullscreen}>{isFullscreen ? '⤢' : '⛶'}</CtlBtn>
+                  <CtlBtn onClick={toggleFullscreen} ariaLabel={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}>
+                    {isFullscreen ? <FaCompress size={12} /> : <FaExpand size={12} />}
+                  </CtlBtn>
                 </div>
               </div>
             </div>
@@ -898,8 +910,10 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           </div>
 
           {prefetch?.next_video_id && prefetchStatus?.done && (
-            <div style={{ marginTop: 12, padding: 12, background: '#0d1f0d',
-                          border: '1px solid #46d369', borderRadius: 6, fontSize: 13, color: '#46d369' }}>
+            <div style={{
+              marginTop: 12, padding: 12, background: '#0d1f0d',
+              border: '1px solid #46d369', borderRadius: 6, fontSize: 13, color: '#46d369'
+            }}>
               Preloading complete for {prefetchCompleteLabel} -- segments 0-4 ({prefetch.quality || '1080p'})
             </div>
           )}
@@ -908,15 +922,15 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         {/* Right: info panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <Panel title="Session">
-            <Row label="ID"     value={session.session_id} />
+            <Row label="ID" value={session.session_id} />
             <Row label="Status" value={playing ? 'Playing' : 'Paused'} />
           </Panel>
 
           <Panel title="CDN Node">
             {session.cdn_node ? (
               <>
-                <Row label="Name"     value={session.cdn_node.name} />
-                <Row label="Node ID"  value={session.cdn_node.id} />
+                <Row label="Name" value={session.cdn_node.name} />
+                <Row label="Node ID" value={session.cdn_node.id} />
               </>
             ) : (
               <div style={{ color: '#555', fontSize: 12 }}>Served from origin</div>
@@ -924,15 +938,15 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           </Panel>
 
           <Panel title="BBA Engine">
-            <Row label="Buffer"   value={<span style={{ color: zoneColor[zone] }}>{simBuf.toFixed(1)}s</span>} />
-            <Row label="Zone"     value={<span style={{ color: zoneColor[zone] }}>{zone}</span>} />
-            <Row label="Quality"  value={<span style={{ color: '#46d369' }}>{quality}</span>} />
+            <Row label="Buffer" value={<span style={{ color: zoneColor[zone] }}>{simBuf.toFixed(1)}s</span>} />
+            <Row label="Zone" value={<span style={{ color: zoneColor[zone] }}>{zone}</span>} />
+            <Row label="Quality" value={<span style={{ color: '#46d369' }}>{quality}</span>} />
             <Row label="Priority" value={priority} />
-            <Row label="Network"  value={<span style={{ color: preset.color }}>{preset.cap} kbps</span>} />
-            <Row label="Audio"    value={audioOptions.find(track => track.index === selectedAudioIndex)?.label || 'Default'} />
+            <Row label="Network" value={<span style={{ color: preset.color }}>{preset.cap} kbps</span>} />
+            <Row label="Audio" value={audioOptions.find(track => track.index === selectedAudioIndex)?.label || 'Default'} />
             <Row label="Subtitle" value={selectedSubtitleUrl === 'off' ? 'Off' : (subtitleTracks.find(track => track.source_url === selectedSubtitleUrl)?.label || 'Selected')} />
             {recQuality && recQuality !== quality && (
-              <Row label="Rec."   value={<span style={{ color: '#f5a623' }}>{recQuality}</span>} />
+              <Row label="Rec." value={<span style={{ color: '#f5a623' }}>{recQuality}</span>} />
             )}
           </Panel>
 
@@ -964,18 +978,24 @@ function Panel({ title, children }) {
   )
 }
 
-function CtlBtn({ children, onClick }) {
+function CtlBtn({ children, onClick, ariaLabel }) {
   return (
     <button
       onClick={onClick}
+      aria-label={ariaLabel}
       style={{
-        background: 'rgba(255,255,255,0.12)',
+        background: 'rgba(0,0,0,0.55)',
         color: '#fff',
-        border: '1px solid rgba(255,255,255,0.25)',
-        borderRadius: 6,
-        padding: '5px 9px',
+        border: '1px solid rgba(255,255,255,0.3)',
+        borderRadius: 999,
+        width: 36,
+        height: 36,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
         cursor: 'pointer',
         fontSize: 12,
+        backdropFilter: 'blur(2px)',
       }}
     >
       {children}

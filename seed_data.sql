@@ -2993,6 +2993,23 @@ SELECT pg_catalog.setval('public.users_id_seq', 5, true);
 SELECT pg_catalog.setval('public.videos_id_seq', 12, true);
 
 
+INSERT INTO public.series_trailers (series_id, title, storage_path, content_type, file_size_bytes, is_active, created_by_user_id, created_at, updated_at)
+SELECT 142,
+			 'Milky Subway Official Trailer',
+			 's3://netflix-mumbai-isd/netflix/series/series-142/trailers/official-trailer.mp4',
+			 'video/mp4',
+			 0,
+			 TRUE,
+			 1,
+			 NOW(),
+			 NOW()
+WHERE EXISTS (SELECT 1 FROM public.series WHERE id = 142)
+	AND NOT EXISTS (
+			SELECT 1 FROM public.series_trailers st
+			WHERE st.series_id = 142 AND st.is_active = TRUE
+	);
+
+
 --
 -- PostgreSQL database dump complete
 --
