@@ -82,7 +82,18 @@ async def _load_episode_tracks(db: AsyncSession, video_id: int) -> tuple[int | N
     return episode_id, payload
 
 
-async def _resolve_next_video_id(db: AsyncSession, video_id: int) -> int | None:
+def _serialize_episode(episode: Episode, season: Season) -> dict:
+    return {
+        "episode_id": episode.id,
+        "video_id": episode.video_id,
+        "episode_number": episode.episode_number,
+        "season_number": season.season_number,
+        "title": episode.title,
+        "synopsis": episode.synopsis,
+    }
+
+
+async def _load_episode_navigation(db: AsyncSession, video_id: int) -> tuple[dict | None, dict | None]:
     current_result = await db.execute(
         select(Episode, Season)
         .join(Season, Season.id == Episode.season_id)
@@ -91,12 +102,12 @@ async def _resolve_next_video_id(db: AsyncSession, video_id: int) -> int | None:
     )
     current_row = current_result.first()
     if not current_row:
-        return None
+        return None, None
 
     current_episode, current_season = current_row
 
     next_result = await db.execute(
-        select(Episode.video_id)
+        select(Episode, Season)
         .join(Season, Season.id == Episode.season_id)
         .where(
             and_(
@@ -116,7 +127,10 @@ async def _resolve_next_video_id(db: AsyncSession, video_id: int) -> int | None:
         .limit(1)
     )
     next_row = next_result.first()
-    return next_row[0] if next_row else None
+    return (
+        _serialize_episode(current_episode, current_season),
+        _serialize_episode(next_row[0], next_row[1]) if next_row else None,
+    )
 
 
 async def get_redis():
@@ -136,32 +150,36 @@ async def start_playback(
     user: User = Depends(get_current_user),
 ):
     episode_id, tracks = await _load_episode_tracks(db, videoId)
+    current_episode, next_episode = await _load_episode_navigation(db, videoId)
 
     cached = await redis.get(f"manifest:{videoId}")
     if cached:
         video_data = json.loads(cached)
-        next_video_id = await _resolve_next_video_id(db, videoId)
-        video_data["has_next_episode"] = next_video_id is not None
-        video_data["next_episode_id"] = next_video_id
+        video_data["title"] = current_episode["title"] if current_episode else video_data.get("title")
+        video_data["description"] = current_episode["synopsis"] if current_episode else video_data.get("description")
+        video_data["has_next_episode"] = next_episode is not None
+        video_data["next_episode_id"] = next_episode["video_id"] if next_episode else None
     else:
         result = await db.execute(select(Video).where(Video.id == videoId))
         video = result.scalar_one_or_none()
         if not video:
             raise HTTPException(status_code=404, detail="Video not found")
-        next_video_id = await _resolve_next_video_id(db, video.id)
         video_data = {
             "id":                  video.id,
-            "title":               video.title,
+            "title":               current_episode["title"] if current_episode else video.title,
+            "description":         current_episode["synopsis"] if current_episode else "",
             "duration":            video.duration_seconds,
             "total_segments":      video.total_segments,
             "available_qualities": video.available_qualities or ["360p", "480p", "720p", "1080p"],
-            "has_next_episode":    next_video_id is not None,
-            "next_episode_id":     next_video_id,
+            "has_next_episode":    next_episode is not None,
+            "next_episode_id":     next_episode["video_id"] if next_episode else None,
         }
         await redis.setex(f"manifest:{videoId}", 300, json.dumps(video_data))
 
     video_data["episode_id"] = episode_id
     video_data["tracks"] = tracks
+    video_data["current_episode"] = current_episode
+    video_data["next_episode"] = next_episode
 
     cdn_result = await db.execute(select(CDNNode).where(CDNNode.status == "active"))
     nodes = cdn_result.scalars().all()

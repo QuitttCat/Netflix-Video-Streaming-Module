@@ -62,6 +62,22 @@ def _parse_prefetch_paths_from_mpd(mpd_bytes: bytes, segment_count: int = 5) -> 
 
 
 async def _resolve_next_video_id(db: AsyncSession, current_video_id: int) -> int | None:
+    current_episode, next_episode = await _load_episode_navigation(db, current_video_id)
+    return next_episode["video_id"] if next_episode else None
+
+
+def _serialize_episode(episode: Episode, season: Season) -> dict:
+    return {
+        "episode_id": episode.id,
+        "video_id": episode.video_id,
+        "episode_number": episode.episode_number,
+        "season_number": season.season_number,
+        "title": episode.title,
+        "synopsis": episode.synopsis,
+    }
+
+
+async def _load_episode_navigation(db: AsyncSession, current_video_id: int) -> tuple[dict | None, dict | None]:
     current_result = await db.execute(
         select(Episode, Season)
         .join(Season, Season.id == Episode.season_id)
@@ -70,12 +86,12 @@ async def _resolve_next_video_id(db: AsyncSession, current_video_id: int) -> int
     )
     current_row = current_result.first()
     if not current_row:
-        return None
+        return None, None
 
     current_episode, current_season = current_row
 
     next_result = await db.execute(
-        select(Episode.video_id)
+        select(Episode, Season)
         .join(Season, Season.id == Episode.season_id)
         .where(
             and_(
@@ -95,7 +111,10 @@ async def _resolve_next_video_id(db: AsyncSession, current_video_id: int) -> int
         .limit(1)
     )
     next_row = next_result.first()
-    return next_row[0] if next_row else None
+    return (
+        _serialize_episode(current_episode, current_season),
+        _serialize_episode(next_row[0], next_row[1]) if next_row else None,
+    )
 
 
 async def _warm_next_episode(
@@ -152,17 +171,19 @@ async def prefetch_next_episode(
     result = await db.execute(select(Video).where(Video.id == currentVideoId))
     video = result.scalar_one_or_none()
     if not video:
-        return {"message": "no next episode", "next_video_id": None}
+        return {"message": "no next episode", "next_video_id": None, "next_episode": None}
 
-    next_id = await _resolve_next_video_id(db, currentVideoId)
+    current_episode, next_episode = await _load_episode_navigation(db, currentVideoId)
+    next_id = next_episode["video_id"] if next_episode else None
     if not next_id:
-        return {"message": "no next episode", "next_video_id": None}
+        return {"message": "no next episode", "next_video_id": None, "next_episode": None}
 
     near_end = durationSeconds > 0 and playheadSeconds >= durationSeconds * 0.90
     if not near_end:
         return {
             "message": "not near end yet",
-            "next_video_id": None,
+            "next_video_id": next_id,
+            "next_episode": next_episode,
             "should_start_prefetch": False,
             "progress_percent": 0,
         }
@@ -188,6 +209,8 @@ async def prefetch_next_episode(
         "session_id": sessionId,
         "current_video_id": currentVideoId,
         "next_video_id": next_id,
+        "current_episode": current_episode,
+        "next_episode": next_episode,
         "cdn_node_url": cdn_url,
         "manifest_url": f"{cdn_url}/videos/{next_id}/manifest.mpd",
         "prefetch_segments": [0, 1, 2, 3, 4],
@@ -231,6 +254,7 @@ async def prefetch_status(sessionId: str, currentVideoId: int):
         {
             "session_id": sessionId,
             "current_video_id": currentVideoId,
+            "next_episode": None,
             "running": False,
             "done": False,
             "progress_percent": 0,

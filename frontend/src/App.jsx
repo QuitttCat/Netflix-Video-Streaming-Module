@@ -90,10 +90,16 @@ export default function App() {
       })
       const data = await r.json()
       if (!r.ok) throw new Error(data.detail || 'Could not start playback')
+      const currentEpisode = data.video_metadata?.current_episode
       setSession(data)
       setSelVideo({
         ...video,
-        episode_id: data.video_metadata?.episode_id || video.episode_id,
+        title: currentEpisode?.title || data.video_metadata?.title || video.title,
+        description: currentEpisode?.synopsis || data.video_metadata?.description || video.description,
+        subtitle: currentEpisode?.episode_number
+          ? `Season ${currentEpisode.season_number} • Episode ${currentEpisode.episode_number}`
+          : video.subtitle,
+        episode_id: currentEpisode?.episode_id || data.video_metadata?.episode_id || video.episode_id,
         tracks: data.video_metadata?.tracks || video.tracks || [],
       })
       navigate('player', { videoId: video.id })
@@ -102,13 +108,17 @@ export default function App() {
     }
   }
 
-  const handlePlayNextEpisode = async (nextVideoId) => {
+  const handlePlayNextEpisode = async (nextEpisode) => {
+    const nextVideoId = typeof nextEpisode === 'object' ? nextEpisode?.video_id : nextEpisode
     if (!nextVideoId) return
     await handlePlayVideo({
       id: nextVideoId,
-      title: `Episode ${nextVideoId}`,
-      description: 'Next episode',
-      subtitle: 'Auto queue',
+      title: nextEpisode?.title || `Episode ${nextVideoId}`,
+      description: nextEpisode?.synopsis || 'Next episode',
+      subtitle: nextEpisode?.episode_number
+        ? `Season ${nextEpisode.season_number} • Episode ${nextEpisode.episode_number}`
+        : 'Auto queue',
+      episode_id: nextEpisode?.episode_id,
     })
   }
 

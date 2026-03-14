@@ -87,6 +87,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const currentVideoId =
     session?.video_metadata?.id ||
     video?.id
+  const nextEpisode = session?.video_metadata?.next_episode || null
   const trackMetadata = Array.isArray(session?.video_metadata?.tracks)
     ? session.video_metadata.tracks
     : Array.isArray(video?.tracks)
@@ -116,6 +117,17 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
       ? `Waiting to reach 90% watch progress before next-episode preloading starts (${watchedPercent}% watched).`
       : 'Preloading status idle. Start playback to enable next-episode preloading.',
   }
+  const prefetchNextEpisode = prefetchUiStatus.next_episode || prefetch?.next_episode || nextEpisode
+  const prefetchLabel = prefetchNextEpisode?.episode_number
+    ? `Season ${prefetchNextEpisode.season_number} • Episode ${prefetchNextEpisode.episode_number}`
+    : prefetchUiStatus.next_video_id
+      ? `Video ${prefetchUiStatus.next_video_id}`
+      : ''
+  const prefetchCompleteLabel = prefetchNextEpisode?.episode_number
+    ? `Episode ${prefetchNextEpisode.episode_number}${prefetchNextEpisode.title ? `: ${prefetchNextEpisode.title}` : ''}`
+    : prefetch?.next_video_id
+      ? `Video ${prefetch.next_video_id}`
+      : 'the next video'
 
   // Initialize dash.js player with smaller buffer targets
   useEffect(() => {
@@ -557,11 +569,11 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     }
   }
 
-  const canPlayNextEpisode = !!session?.video_metadata?.next_episode_id
+  const canPlayNextEpisode = !!(nextEpisode?.video_id || session?.video_metadata?.next_episode_id)
 
   const handlePlayNextEpisode = async () => {
     if (!canPlayNextEpisode || !onPlayNextEpisode) return
-    await onPlayNextEpisode(session.video_metadata.next_episode_id)
+    await onPlayNextEpisode(nextEpisode || session.video_metadata.next_episode_id)
   }
 
   const handleAudioTrackChange = (event) => {
@@ -591,7 +603,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         if (current === null) return null
         if (current <= 1) {
           if (!autoNextCancelledRef.current && canPlayNextEpisode && onPlayNextEpisode) {
-            onPlayNextEpisode(session.video_metadata.next_episode_id)
+            onPlayNextEpisode(nextEpisode || session.video_metadata.next_episode_id)
           }
           return null
         }
@@ -600,7 +612,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     }, 1000)
 
     return () => window.clearTimeout(t)
-  }, [autoNextCountdown, canPlayNextEpisode, onPlayNextEpisode, session?.video_metadata?.next_episode_id])
+  }, [autoNextCountdown, canPlayNextEpisode, nextEpisode, onPlayNextEpisode, session?.video_metadata?.next_episode_id])
 
   const handleVideoEnded = () => {
     if (!canPlayNextEpisode || !onPlayNextEpisode) return
@@ -860,7 +872,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
           <div style={{ marginTop: 12, padding: 12, background: '#0e1b2d', border: '1px solid #2f76d2', borderRadius: 6 }}>
             <div style={{ fontSize: 12, color: '#9ec6ff', marginBottom: 8, fontWeight: 700 }}>
-              Server Preloading Status {prefetchUiStatus.next_video_id ? `(Episode ${prefetchUiStatus.next_video_id})` : ''}
+              Server Preloading Status {prefetchLabel ? `(${prefetchLabel})` : ''}
             </div>
             <div style={{ height: 8, background: '#1d2b3d', borderRadius: 999, overflow: 'hidden' }}>
               <div
@@ -888,7 +900,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           {prefetch?.next_video_id && prefetchStatus?.done && (
             <div style={{ marginTop: 12, padding: 12, background: '#0d1f0d',
                           border: '1px solid #46d369', borderRadius: 6, fontSize: 13, color: '#46d369' }}>
-              Preloading complete for Episode {prefetch.next_video_id} -- segments 0-4 ({prefetch.quality || '1080p'})
+              Preloading complete for {prefetchCompleteLabel} -- segments 0-4 ({prefetch.quality || '1080p'})
             </div>
           )}
         </div>
