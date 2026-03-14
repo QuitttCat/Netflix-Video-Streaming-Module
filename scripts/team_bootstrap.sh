@@ -34,7 +34,7 @@ if [[ "${1:-}" != "--skip-volume-reset" ]]; then
   docker compose down -v
 fi
 
-docker compose up --build -d
+docker compose up -d --build
 
 echo "Application is up: http://localhost"
 echo "Tip: pass --skip-volume-reset to keep existing local DB/volumes."

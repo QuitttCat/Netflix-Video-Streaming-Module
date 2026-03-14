@@ -38,7 +38,7 @@ if (-not $SkipVolumeReset) {
   docker compose down -v
 }
 
-docker compose up --build -d
+docker compose up -d --build
 
 Write-Host "Application is up." -ForegroundColor Green
 Write-Host "Open: http://localhost" -ForegroundColor Green
