@@ -68,22 +68,73 @@ async def get_video_thumbnail(video_id: int, db: AsyncSession = Depends(get_db))
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    if video.thumbnail_path:
-        thumb_ref = str(video.thumbnail_path)
+    thumb_ref = str(video.thumbnail_path or "")
+    if thumb_ref and not thumb_ref.startswith("s3://"):
+        local_thumb = thumb_ref if os.path.isabs(thumb_ref) else os.path.join(VIDEO_STORAGE_PATH, str(video.id), thumb_ref)
+        if os.path.exists(local_thumb):
+            mt = "image/png" if local_thumb.lower().endswith(".png") else "image/jpeg"
+            return FileResponse(local_thumb, media_type=mt)
+
+    # S3-backed videos can have thumbnail names/extensions that differ from seed snapshots.
+    # Try explicit path first, then common candidates, then auto-discover thumbnail* files.
+    if (thumb_ref.startswith("s3://")) or (video.storage_path and str(video.storage_path).startswith("s3://")):
+        s3 = S3MediaService()
+        candidate_keys: list[str] = []
+        seen: set[str] = set()
+
+        def add_key(key: str | None) -> None:
+            if not key:
+                return
+            normalized = key.strip().lstrip("/")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                candidate_keys.append(normalized)
 
         if thumb_ref.startswith("s3://"):
             try:
-                _, key = parse_s3_uri(thumb_ref)
-                s3 = S3MediaService()
+                _, explicit_key = parse_s3_uri(thumb_ref)
+                add_key(explicit_key)
+            except Exception:
+                pass
+
+        s3_prefix = None
+        if video.storage_path and str(video.storage_path).startswith("s3://"):
+            try:
+                _, s3_prefix = parse_s3_uri(str(video.storage_path))
+                for name in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png", "thumbnail.webp"):
+                    add_key(join_key(s3_prefix, name))
+            except Exception:
+                s3_prefix = None
+
+        for key in candidate_keys:
+            try:
                 body, content_type = await run_in_threadpool(s3.get_object_bytes, key)
                 return Response(content=body, media_type=content_type or "image/jpeg")
             except Exception:
+                continue
+
+        if s3_prefix:
+            try:
+                listed = await run_in_threadpool(
+                    s3._s3.list_objects_v2,
+                    Bucket=s3.bucket_name,
+                    Prefix=s3_prefix.rstrip("/") + "/",
+                    MaxKeys=200,
+                )
+                contents = listed.get("Contents", [])
+                image_suffixes = (".jpg", ".jpeg", ".png", ".webp")
+                keys = [item.get("Key", "") for item in contents]
+                keys.sort()
+                for key in keys:
+                    file_name = key.rsplit("/", 1)[-1].lower()
+                    if file_name.startswith("thumbnail") and file_name.endswith(image_suffixes):
+                        try:
+                            body, content_type = await run_in_threadpool(s3.get_object_bytes, key)
+                            return Response(content=body, media_type=content_type or "image/jpeg")
+                        except Exception:
+                            continue
+            except Exception:
                 pass
-        else:
-            local_thumb = thumb_ref if os.path.isabs(thumb_ref) else os.path.join(VIDEO_STORAGE_PATH, str(video.id), thumb_ref)
-            if os.path.exists(local_thumb):
-                mt = "image/png" if local_thumb.lower().endswith(".png") else "image/jpeg"
-                return FileResponse(local_thumb, media_type=mt)
 
     fallback_path = os.path.join(VIDEO_STORAGE_PATH, "defaults", "thumbnail.jpg")
     if os.path.exists(fallback_path):
