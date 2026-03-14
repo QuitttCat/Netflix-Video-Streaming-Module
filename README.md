@@ -4,6 +4,69 @@ CSE 326 - Information System Design | Group 1
 
 Intelligent Buffering & Preloading with CDN Simulation.
 
+## Teammate Quick Start (Clone -> Run -> See Everything)
+
+### 1) Clone
+
+```bash
+git clone https://github.com/QuitttCat/Netflix-Video-Streaming-Module.git
+cd Netflix-Video-Streaming-Module
+```
+
+### 2) Provide shared `.env` values (required for seeded uploaded media)
+
+Copy the template and fill values:
+
+```bash
+cp .env.example .env
+```
+
+Required keys in `.env`:
+
+- `AWS_REGION`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `S3_BUCKET_NAME`
+
+Why this is required:
+
+- The seeded DB includes uploaded videos/audio/subtitles whose `storage_path` is `s3://...`.
+- Without the shared S3 credentials/bucket access, metadata will be visible but media files will not play.
+
+### 3) One-command bootstrap
+
+On Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\team_bootstrap.ps1
+```
+
+On macOS/Linux:
+
+```bash
+bash ./scripts/team_bootstrap.sh
+```
+
+This does:
+
+- `docker compose down -v` (fresh DB volume so `seed_data.sql` is applied)
+- `docker compose up --build -d`
+
+Then open **http://localhost**.
+
+### 4) What teammates will see after quick start
+
+- Seeded users, videos, series, seasons, episodes, media tracks (audio/subtitle metadata)
+- Existing uploaded episodes (including Milky Subway)
+- Multi-audio selection and subtitle selection in player
+- Subtitle rendering, buffering metrics, and prefetch flow
+
+Note:
+
+- If they want to keep existing local DB data and skip wiping volumes, use:
+  - PowerShell: `-SkipVolumeReset`
+  - Bash: `--skip-volume-reset`
+
 ## How to Run
 
 Make sure Docker is installed, then:
