@@ -16,9 +16,6 @@ from ..services.video_packaging import build_video_hierarchy_prefix, encode_and_
 
 router = APIRouter()
 VIDEO_STORAGE_PATH = os.getenv("VIDEO_STORAGE_PATH", "/videos")
-SEED_THUMBNAIL_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "static", "seed_thumbnails")
-)
 
 
 class VideoUpdateRequest(BaseModel):
@@ -138,12 +135,6 @@ async def get_video_thumbnail(video_id: int, db: AsyncSession = Depends(get_db))
                             continue
             except Exception:
                 pass
-
-    # Keep teammate fresh-clone behavior stable even when S3 credentials are unavailable.
-    for ext, media_type in ((".jpg", "image/jpeg"), (".jpeg", "image/jpeg"), (".png", "image/png"), (".webp", "image/webp")):
-        packaged_thumb = os.path.join(SEED_THUMBNAIL_PATH, f"{video.id}{ext}")
-        if os.path.exists(packaged_thumb):
-            return FileResponse(packaged_thumb, media_type=media_type)
 
     fallback_path = os.path.join(VIDEO_STORAGE_PATH, "defaults", "thumbnail.jpg")
     if os.path.exists(fallback_path):
