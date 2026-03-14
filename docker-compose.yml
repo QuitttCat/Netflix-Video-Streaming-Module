@@ -10,6 +10,7 @@ services:
       POSTGRES_PASSWORD: netflix123
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./seed_data.sql:/seed_data.sql
     ports:
       - "5433:5432"
     healthcheck:

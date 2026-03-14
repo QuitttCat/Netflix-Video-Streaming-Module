@@ -132,13 +132,13 @@ CREATE TABLE IF NOT EXISTS video_progress (
 );
 
 -- Load repository seed generated from a real working database.
-\i /docker-entrypoint-initdb.d/seed_data.sql
+\i /seed_data.sql
 
 -- Fallback demo rows only if seed_data.sql produced no videos.
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM videos) THEN
-        INSERT INTO videos (title, description, duration_seconds, total_segments, available_qualities, storage_path)
+    IF NOT EXISTS (SELECT 1 FROM public.videos) THEN
+        INSERT INTO public.videos (title, description, duration_seconds, total_segments, available_qualities, storage_path)
         VALUES
             ('Demo Episode 1', 'First episode - Intelligent Buffering Demo', 900, 150,
             ARRAY['360p','480p','720p','1080p'], '/videos/1'),
@@ -146,7 +146,7 @@ BEGIN
             ARRAY['360p','480p','720p','1080p'], '/videos/2')
         ON CONFLICT DO NOTHING;
 
-        UPDATE videos SET next_episode_id = 2 WHERE id = 1;
+        UPDATE public.videos SET next_episode_id = 2 WHERE id = 1;
     END IF;
 END
 $$;
