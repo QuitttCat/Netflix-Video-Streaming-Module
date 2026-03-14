@@ -13,7 +13,9 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const [fileByEpisode, setFileByEpisode] = useState({})
   const [thumbByEpisode, setThumbByEpisode] = useState({})
   const [uploadingEpisodeId, setUploadingEpisodeId] = useState(null)
-  const [uploadingThumbEpisodeId, setUploadingThumbEpisodeId] = useState(null)
+  const [uploadProgressByEpisode, setUploadProgressByEpisode] = useState({})
+  const [uploadStatusByEpisode, setUploadStatusByEpisode] = useState({})
+  const [uploadingThumbByEpisode, setUploadingThumbByEpisode] = useState({})
   const [seedStatus, setSeedStatus] = useState(null)
   const [seedMsg, setSeedMsg] = useState('')
   const [videos, setVideos] = useState([])
@@ -29,6 +31,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const [seriesSearch, setSeriesSearch] = useState('')
   const [seriesThumbFile, setSeriesThumbFile] = useState(null)
   const wsRef = useRef(null)
+  const uploadPollTimeoutsRef = useRef({})
 
   const fetchSeriesOverview = async () => {
     try {
@@ -84,6 +87,13 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   }, [])
 
   useEffect(() => {
+    return () => {
+      Object.values(uploadPollTimeoutsRef.current).forEach(tid => clearTimeout(tid))
+      uploadPollTimeoutsRef.current = {}
+    }
+  }, [])
+
+  useEffect(() => {
     if (!isContentMode) return
     fetchSeriesOverview()
     fetchSeedStatus()
@@ -108,8 +118,79 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     setSelectedSeason(item.seasons?.[0] || null)
   }
 
+  const clearEpisodeStatusPoll = (episodeId) => {
+    const tid = uploadPollTimeoutsRef.current[episodeId]
+    if (tid) {
+      clearTimeout(tid)
+      delete uploadPollTimeoutsRef.current[episodeId]
+    }
+  }
+
+  const fetchEpisodeUploadStatus = async (episodeId) => {
+    const r = await fetch(`/api/catalog/admin/episodes/${episodeId}/upload-status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const txt = await r.text()
+    const payload = parseMaybeJson(txt)
+    if (!r.ok) throw new Error(payload.detail || payload.raw || 'Failed to fetch upload status')
+    return payload
+  }
+
+  const startEpisodeStatusPolling = (episodeId) => {
+    clearEpisodeStatusPoll(episodeId)
+
+    const tick = async () => {
+      try {
+        const payload = await fetchEpisodeUploadStatus(episodeId)
+        setUploadStatusByEpisode(prev => ({
+          ...prev,
+          [episodeId]: {
+            status: payload.status,
+            stage: payload.stage,
+            progress_percent: Number(payload.progress_percent || 0),
+            message: payload.message || '',
+            error: payload.error || null,
+            job_id: payload.job_id || null,
+            updated_at: payload.updated_at || null,
+            playable: !!payload.playable,
+            video_id: payload.video_id || null,
+          },
+        }))
+
+        if (payload.status === 'done' || payload.status === 'failed' || payload.status === 'ready' || payload.status === 'missing') {
+          clearEpisodeStatusPoll(episodeId)
+          if (payload.status === 'done' || payload.status === 'ready') {
+            setUploadMsg(`Episode ${episodeId} is ready for playback.`)
+            await fetchSeriesOverview()
+          }
+          if (payload.status === 'failed') {
+            setUploadMsg(`Upload processing failed for episode ${episodeId}: ${payload.error || payload.message || 'Unknown error'}`)
+            await fetchSeriesOverview()
+          }
+          return
+        }
+
+        uploadPollTimeoutsRef.current[episodeId] = window.setTimeout(tick, 2000)
+      } catch (e) {
+        setUploadMsg(`Upload status check failed for episode ${episodeId}: ${e.message}`)
+        uploadPollTimeoutsRef.current[episodeId] = window.setTimeout(tick, 3000)
+      }
+    }
+
+    tick()
+  }
+
+  const hasEpisodeUploadInFlight = () => {
+    if (uploadingEpisodeId !== null) return true
+    return Object.values(uploadStatusByEpisode).some(item => item?.status === 'queued' || item?.status === 'processing')
+  }
+
   const uploadEpisodeVideo = async (episode) => {
     setUploadMsg('')
+    if (hasEpisodeUploadInFlight()) {
+      setUploadMsg('Another episode video upload is already running. Wait for it to finish before starting the next one.')
+      return
+    }
     const file = fileByEpisode[episode.episode_id]
     if (!file) {
       setUploadMsg(`Select a video file for S${modalSeason?.season_number}:E${episode.episode_number}`)
@@ -117,22 +198,58 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     }
     try {
       setUploadingEpisodeId(episode.episode_id)
+      setUploadProgressByEpisode(prev => ({ ...prev, [episode.episode_id]: 0 }))
       const form = new FormData()
       form.append('episode_id', String(episode.episode_id))
       form.append('title', `Episode ${episode.episode_number}`)
       form.append('description', 'Uploaded from admin dashboard')
       form.append('file', file)
 
-      const r = await fetch(`/api/catalog/admin/episodes/${episode.episode_id}/upload`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      })
-      const payloadText = await r.text()
-      const payload = parseMaybeJson(payloadText)
-      if (!r.ok) throw new Error(payload.detail || payloadText || 'Upload failed')
+      const payload = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `/api/catalog/admin/episodes/${episode.episode_id}/upload`)
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+        // Large videos + encode/upload can take a while.
+        xhr.timeout = 60 * 60 * 1000
 
-      setUploadMsg(`Uploaded ${episode.title} → video_id ${payload.video_id}. Encode this video to make playback ready.`)
+        xhr.upload.onprogress = (evt) => {
+          if (!evt.lengthComputable) return
+          const p = Math.round((evt.loaded / Math.max(1, evt.total)) * 100)
+          setUploadProgressByEpisode(prev => ({ ...prev, [episode.episode_id]: p }))
+        }
+
+        xhr.onload = () => {
+          const responseText = xhr.responseText || ''
+          const parsed = parseMaybeJson(responseText)
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parsed)
+            return
+          }
+          reject(new Error(parsed.detail || parsed.raw || responseText || `Upload failed (HTTP ${xhr.status})`))
+        }
+
+        xhr.onerror = () => reject(new Error('Network error while uploading. Check browser Network tab for the failed request.'))
+        xhr.onabort = () => reject(new Error('Upload was aborted before completion.'))
+        xhr.ontimeout = () => reject(new Error('Upload timed out before the server finished processing.'))
+        xhr.send(form)
+      })
+
+      setUploadStatusByEpisode(prev => ({
+        ...prev,
+        [episode.episode_id]: {
+          status: payload.status || 'queued',
+          stage: payload.stage || 'queued',
+          progress_percent: Number(payload.progress_percent || 5),
+          message: payload.message || 'Upload queued for processing.',
+          error: null,
+          job_id: payload.job_id || null,
+          playable: false,
+          video_id: payload.video_id || null,
+        },
+      }))
+      startEpisodeStatusPolling(episode.episode_id)
+
+      setUploadMsg(`Upload received for ${episode.title}. Server is processing in background.`)
       setFileByEpisode(prev => {
         const copy = { ...prev }
         delete copy[episode.episode_id]
@@ -142,7 +259,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     } catch (err) {
       setUploadMsg(`Upload error: ${err.message}`)
     } finally {
-      setUploadingEpisodeId(null)
+      setUploadingEpisodeId(current => (current === episode.episode_id ? null : current))
     }
   }
 
@@ -328,6 +445,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
       const description = videoUploadDesc.trim()
       const r = await fetch(`/api/videos/upload?title=${encodeURIComponent(title)}&description=${encodeURIComponent(description)}`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
         body: form,
       })
       const t = await r.text()
@@ -396,6 +514,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
       form.append('file', file)
       const r = await fetch(`/api/videos/${videoId}/thumbnail`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
         body: form,
       })
       const t = await r.text()
@@ -486,12 +605,13 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     }
 
     try {
-      setUploadingThumbEpisodeId(episode.episode_id)
+      setUploadingThumbByEpisode(prev => ({ ...prev, [episode.episode_id]: true }))
       const form = new FormData()
       form.append('file', file)
 
       const r = await fetch(`/api/videos/${episode.video_id}/thumbnail`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
         body: form,
       })
       const payloadText = await r.text()
@@ -508,7 +628,11 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     } catch (e) {
       setUploadMsg(`Thumbnail upload error: ${e.message}`)
     } finally {
-      setUploadingThumbEpisodeId(null)
+      setUploadingThumbByEpisode(prev => {
+        const copy = { ...prev }
+        delete copy[episode.episode_id]
+        return copy
+      })
     }
   }
 
@@ -871,13 +995,45 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                     <tr key={ep.episode_id}>
                       <td style={{ padding: '8px' }}>{ep.episode_number}</td>
                       <td style={{ padding: '8px' }}>{ep.title}</td>
-                      <td style={{ padding: '8px', color: ep.missing_video ? '#e50914' : '#46d369' }}>
-                        {ep.missing_video ? 'Missing' : `Ready (video ${ep.video_id})`}
+                      <td style={{ padding: '8px', color: (() => {
+                        const st = uploadStatusByEpisode[ep.episode_id]?.status
+                        if (st === 'failed') return '#f56b6b'
+                        if (st === 'queued' || st === 'processing') return '#f5a623'
+                        return ep.missing_video ? '#e50914' : '#46d369'
+                      })() }}>
+                        {(() => {
+                          const st = uploadStatusByEpisode[ep.episode_id]?.status
+                          const stage = uploadStatusByEpisode[ep.episode_id]?.stage
+                          const p = Number(uploadStatusByEpisode[ep.episode_id]?.progress_percent || 0)
+                          const up = Math.max(0, Math.min(100, Math.round(uploadProgressByEpisode[ep.episode_id] || 0)))
+                          const shownPercent = uploadingEpisodeId === ep.episode_id ? up : p
+                          if (st === 'queued') return 'Queued'
+                          if (st === 'processing') return `Processing (${stage || 'working'}) ${shownPercent}%`
+                          if (st === 'failed') return 'Processing Failed'
+                          if (st === 'done' || st === 'ready') return `Ready (video ${uploadStatusByEpisode[ep.episode_id]?.video_id || ep.video_id})`
+                          return ep.missing_video ? 'Missing' : `Ready (video ${ep.video_id})`
+                        })()}
+                        {(uploadingEpisodeId === ep.episode_id || uploadStatusByEpisode[ep.episode_id]?.status === 'queued' || uploadStatusByEpisode[ep.episode_id]?.status === 'processing') && (
+                          <div style={{ marginTop: 6, height: 6, background: '#2a2a2a', borderRadius: 999, overflow: 'hidden', maxWidth: 180 }}>
+                            <div
+                              style={{
+                                width: `${(() => {
+                                  const up = Math.max(0, Math.min(100, Math.round(uploadProgressByEpisode[ep.episode_id] || 0)))
+                                  const backend = Math.max(0, Math.min(100, Math.round(Number(uploadStatusByEpisode[ep.episode_id]?.progress_percent || 0))))
+                                  return uploadingEpisodeId === ep.episode_id ? up : backend
+                                })()}%`,
+                                height: '100%',
+                                background: 'linear-gradient(90deg, #e50914, #f5a623)',
+                                transition: 'width 0.35s ease',
+                              }}
+                            />
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '8px' }}>
                         <input
                           type="file"
-                          accept="video/mp4"
+                          accept="video/mp4,video/x-matroska,.mkv,video/webm,video/quicktime,.mov,.avi"
                           onChange={e => setFileByEpisode(prev => ({ ...prev, [ep.episode_id]: e.target.files?.[0] || null }))}
                           style={{ color: '#aaa' }}
                         />
@@ -894,26 +1050,32 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                           <button
                             onClick={() => uploadEpisodeVideo(ep)}
-                            disabled={uploadingEpisodeId === ep.episode_id}
+                            disabled={hasEpisodeUploadInFlight() || uploadStatusByEpisode[ep.episode_id]?.status === 'processing' || uploadStatusByEpisode[ep.episode_id]?.status === 'queued'}
                             style={{
                               background: '#e50914', color: '#fff', border: 'none', borderRadius: 4,
                               padding: '7px 10px', cursor: 'pointer',
-                              opacity: uploadingEpisodeId === ep.episode_id ? 0.6 : 1,
+                              opacity: (hasEpisodeUploadInFlight() || uploadStatusByEpisode[ep.episode_id]?.status === 'processing' || uploadStatusByEpisode[ep.episode_id]?.status === 'queued') ? 0.6 : 1,
                             }}
                           >
-                            {uploadingEpisodeId === ep.episode_id ? 'Uploading…' : 'Upload Video'}
+                            {uploadingEpisodeId === ep.episode_id
+                              ? `Uploading ${Math.max(1, Math.min(100, Math.round(uploadProgressByEpisode[ep.episode_id] || 0)))}%...`
+                              : (uploadStatusByEpisode[ep.episode_id]?.status === 'queued'
+                                  ? `Queued ${Math.max(0, Math.min(100, Math.round(Number(uploadStatusByEpisode[ep.episode_id]?.progress_percent || 0))))}%...`
+                                  : (uploadStatusByEpisode[ep.episode_id]?.status === 'processing'
+                                      ? `Processing ${Math.max(0, Math.min(100, Math.round(Number(uploadStatusByEpisode[ep.episode_id]?.progress_percent || 0))))}%...`
+                                      : 'Upload Video'))}
                           </button>
 
                           <button
                             onClick={() => uploadEpisodeThumbnail(ep)}
-                            disabled={uploadingThumbEpisodeId === ep.episode_id || !ep.video_id}
+                            disabled={uploadingThumbByEpisode[ep.episode_id] || !ep.video_id}
                             style={{
                               background: '#333', color: '#fff', border: '1px solid #555', borderRadius: 4,
                               padding: '7px 10px', cursor: ep.video_id ? 'pointer' : 'not-allowed',
-                              opacity: (uploadingThumbEpisodeId === ep.episode_id || !ep.video_id) ? 0.6 : 1,
+                              opacity: (uploadingThumbByEpisode[ep.episode_id] || !ep.video_id) ? 0.6 : 1,
                             }}
                           >
-                            {uploadingThumbEpisodeId === ep.episode_id ? 'Uploading…' : 'Upload Thumbnail'}
+                            {uploadingThumbByEpisode[ep.episode_id] ? 'Uploading…' : 'Upload Thumbnail'}
                           </button>
 
                           <button

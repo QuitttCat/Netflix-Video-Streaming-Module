@@ -51,6 +51,23 @@ body {
   isolation: isolate;
 }
 
+/* ── Subtitle cue styling ───────────────────────────────────────────────── */
+/* Remove the default black box; use a painted outline instead so text is */
+/* readable on any background.  The bottom margin lifts it above the bar.  */
+video.nf-player::cue {
+  background: transparent;
+  color: #ffffff;
+  font-size: 1.1em;
+  font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+  text-shadow:
+    -1px -1px 3px #000,
+     1px -1px 3px #000,
+    -1px  1px 3px #000,
+     1px  1px 3px #000,
+     0     0  6px rgba(0,0,0,0.9);
+}
+
 .home-shell::before {
   content: "";
   position: absolute;

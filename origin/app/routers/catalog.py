@@ -1,5 +1,7 @@
 import os
 import asyncio
+import shutil
+import uuid
 from typing import Optional
 from datetime import datetime
 
@@ -12,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from ..auth import get_current_user, require_admin
-from ..database import get_db
+from ..database import get_db, AsyncSessionLocal
 from ..models import Series, Season, Episode, MediaTrack, User, Video, WatchProgress
 from ..services.s3_media import S3MediaService, join_key, parse_s3_uri
 from ..services.video_packaging import (
@@ -32,6 +34,29 @@ seed_catalog_status = {
     "output": "",
     "error": "",
 }
+
+upload_job_status = {}
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+def _set_upload_job(episode_id: int, **fields):
+    current = upload_job_status.get(episode_id, {})
+    current.update(fields)
+    current["updated_at"] = _now_iso()
+    upload_job_status[episode_id] = current
+    return current
+
+
+def _find_active_upload_job(*, exclude_episode_id: int | None = None):
+    for active_episode_id, job in upload_job_status.items():
+        if exclude_episode_id is not None and active_episode_id == exclude_episode_id:
+            continue
+        if (job or {}).get("status") in {"queued", "processing"}:
+            return active_episode_id, job
+    return None, None
 
 
 class SeedCatalogRequest(BaseModel):
@@ -193,6 +218,8 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
             ep_items = []
             for ep in season_episodes:
                 total_count += 1
+                job = upload_job_status.get(ep.id)
+                processing_active = bool(job and job.get("status") in {"queued", "processing"})
                 is_missing = not (ep.playable and ep.video_id is not None)
                 if is_missing:
                     missing_count += 1
@@ -206,6 +233,10 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
                         "video_id": ep.video_id,
                         "thumbnail_url": f"/api/videos/{ep.video_id}/thumbnail" if ep.video_id else _series_thumbnail_api_url(sr.id),
                         "missing_video": is_missing,
+                        "processing_active": processing_active,
+                        "processing_status": job.get("status") if job else None,
+                        "processing_stage": job.get("stage") if job else None,
+                        "processing_progress_percent": int(job.get("progress_percent") or 0) if job else 0,
                     }
                 )
             season_items.append(
@@ -650,6 +681,7 @@ async def admin_upload_episode_video(
     title: str = Form(""),
     description: str = Form(""),
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -658,6 +690,7 @@ async def admin_upload_episode_video(
         title=title,
         description=description,
         file=file,
+        background_tasks=background_tasks,
         db=db,
     )
 
@@ -668,6 +701,7 @@ async def admin_upload_episode_video_by_id(
     title: str = Form(""),
     description: str = Form(""),
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -676,8 +710,61 @@ async def admin_upload_episode_video_by_id(
         title=title,
         description=description,
         file=file,
+        background_tasks=background_tasks,
         db=db,
     )
+
+
+@router.get("/admin/episodes/{episode_id}/upload-status")
+async def admin_get_episode_upload_status(
+    episode_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    episode_result = await db.execute(select(Episode).where(Episode.id == episode_id))
+    episode = episode_result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    job = upload_job_status.get(episode_id)
+    if job:
+        return {
+            "ok": True,
+            "episode_id": episode_id,
+            "status": job.get("status"),
+            "stage": job.get("stage"),
+            "progress_percent": int(job.get("progress_percent") or 0),
+            "message": job.get("message"),
+            "error": job.get("error"),
+            "job_id": job.get("job_id"),
+            "video_id": episode.video_id,
+            "playable": bool(episode.playable and episode.video_id is not None),
+            "updated_at": job.get("updated_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+            "queued_filename": job.get("filename"),
+        }
+
+    if episode.playable and episode.video_id is not None:
+        return {
+            "ok": True,
+            "episode_id": episode_id,
+            "status": "ready",
+            "stage": "complete",
+            "progress_percent": 100,
+            "video_id": episode.video_id,
+            "playable": True,
+        }
+
+    return {
+        "ok": True,
+        "episode_id": episode_id,
+        "status": "missing",
+        "stage": "idle",
+        "progress_percent": 0,
+        "video_id": episode.video_id,
+        "playable": False,
+    }
 
 
 async def _upload_episode_video_impl(
@@ -685,8 +772,12 @@ async def _upload_episode_video_impl(
     title: str,
     description: str,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     db: AsyncSession,
 ):
+    if background_tasks is None:
+        raise HTTPException(status_code=500, detail="Background task manager is unavailable")
+
     episode_result = await db.execute(select(Episode).where(Episode.id == episode_id))
     episode = episode_result.scalar_one_or_none()
     if not episode:
@@ -701,100 +792,239 @@ async def _upload_episode_video_impl(
         video = Video(
             title=title or f"Episode {episode.episode_number}",
             description=description,
-            available_qualities=["320p", "480p", "720p"],
+            available_qualities=["360p", "480p", "720p", "1080p"],
             storage_path="",
         )
         db.add(video)
         await db.flush()
 
+    if title.strip():
+        video.title = title.strip()
+    if description.strip():
+        video.description = description.strip()
+
+    existing_job = upload_job_status.get(episode_id)
+    if existing_job and existing_job.get("status") in {"queued", "processing"}:
+        raise HTTPException(status_code=409, detail="An upload job is already running for this episode")
+
+    active_episode_id, _ = _find_active_upload_job(exclude_episode_id=episode_id)
+    if active_episode_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Episode {active_episode_id} is still uploading or processing. Only one episode video upload can run at a time.",
+        )
+
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    storage_backend = (os.getenv("VIDEO_STORAGE_BACKEND", "s3") or "s3").lower()
+    job_id = str(uuid.uuid4())
+    original_name = file.filename or "raw.mp4"
+    upload_dir = os.path.join("/tmp", "episode-upload-jobs", str(episode_id), job_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    input_path = os.path.join(upload_dir, original_name)
 
-    season_result = await db.execute(select(Season).where(Season.id == episode.season_id))
-    season = season_result.scalar_one_or_none()
-    series_result = await db.execute(select(Series).where(Series.id == episode.series_id))
-    series = series_result.scalar_one_or_none()
-
-    if storage_backend == "s3":
-        s3 = S3MediaService()
-        missing = s3.validate_configuration()
-        if missing:
-            raise HTTPException(
-                status_code=500,
-                detail=f"S3 storage is selected but missing env vars: {', '.join(missing)}",
-            )
-
-        s3_prefix = build_video_hierarchy_prefix(
-            video_id=video.id,
-            episode=episode,
-            season_number=season.season_number if season else None,
-            series_content_type=series.content_type if series else "series",
-        )
-
-        try:
-            encode_result = await encode_and_upload_dash_to_s3(
-                raw_bytes=file_bytes,
-                raw_filename=file.filename or "raw.mp4",
-                video_id=video.id,
-                s3_prefix=s3_prefix,
-                s3_service=s3,
-            )
-        except Exception as e:
-            episode.video_id = video.id
-            episode.playable = False
-            await db.commit()
-            raise HTTPException(status_code=400, detail=f"Upload saved but S3 chunking/encoding failed: {str(e)}")
-
-        video.storage_path = f"s3://{s3.bucket_name}/{encode_result['s3_prefix']}"
-        output_meta = {
-            "storage_backend": "s3",
-            "s3_prefix": encode_result["s3_prefix"],
-            "manifest_key": encode_result["manifest_key"],
-            "uploaded_files": len(encode_result["uploaded_files"]),
-        }
-    else:
-        raw_path = os.path.join(VIDEO_STORAGE_PATH, str(video.id), "raw.mp4")
-        os.makedirs(os.path.dirname(raw_path), exist_ok=True)
-        async with aiofiles.open(raw_path, "wb") as f:
-            await f.write(file_bytes)
-
-        out_dir = os.path.join(VIDEO_STORAGE_PATH, str(video.id))
-        try:
-            encode_result = await encode_video_to_dash(raw_path, out_dir)
-        except Exception as e:
-            episode.video_id = video.id
-            episode.playable = False
-            await db.commit()
-            raise HTTPException(status_code=400, detail=f"Upload saved but encoding failed: {str(e)}")
-
-        video.storage_path = f"/videos/{video.id}"
-        output_meta = {
-            "storage_backend": "local",
-            "raw_path": raw_path,
-        }
-
-    video.duration_seconds = encode_result["duration_seconds"]
-    video.total_segments = encode_result["total_segments"]
-    video.available_qualities = ["320p", "480p", "720p"]
+    async with aiofiles.open(input_path, "wb") as out:
+        await out.write(file_bytes)
 
     episode.video_id = video.id
-    episode.playable = True
-    episode.duration_sec = max(episode.duration_sec, encode_result["duration_seconds"])
-
+    episode.playable = False
     await db.commit()
+
+    _set_upload_job(
+        episode_id,
+        job_id=job_id,
+        video_id=video.id,
+        status="queued",
+        stage="queued",
+        progress_percent=5,
+        message="Upload received. Processing in background.",
+        error=None,
+        started_at=_now_iso(),
+        finished_at=None,
+        filename=original_name,
+    )
+
+    background_tasks.add_task(
+        _process_episode_upload_job,
+        episode_id,
+        video.id,
+        input_path,
+        original_name,
+        job_id,
+    )
 
     return {
         "ok": True,
+        "queued": True,
         "episode_id": episode.id,
         "video_id": video.id,
-        "duration_seconds": video.duration_seconds,
-        "total_segments": video.total_segments,
-        "message": "Uploaded and encoded successfully.",
-        **output_meta,
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "message": "Upload accepted. Background processing started.",
     }
+
+
+async def _process_episode_upload_job(
+    episode_id: int,
+    video_id: int,
+    input_path: str,
+    original_name: str,
+    job_id: str,
+):
+    _set_upload_job(
+        episode_id,
+        status="processing",
+        stage="preparing",
+        progress_percent=15,
+        message="Preparing uploaded file for processing...",
+        error=None,
+    )
+
+    try:
+        async with AsyncSessionLocal() as db:
+            episode_result = await db.execute(select(Episode).where(Episode.id == episode_id))
+            episode = episode_result.scalar_one_or_none()
+            if not episode:
+                raise RuntimeError("Episode not found while processing queued upload")
+
+            video_result = await db.execute(select(Video).where(Video.id == video_id))
+            video = video_result.scalar_one_or_none()
+            if not video:
+                raise RuntimeError("Video metadata not found while processing queued upload")
+
+            storage_backend = (os.getenv("VIDEO_STORAGE_BACKEND", "s3") or "s3").lower()
+
+            season_result = await db.execute(select(Season).where(Season.id == episode.season_id))
+            season = season_result.scalar_one_or_none()
+            series_result = await db.execute(select(Series).where(Series.id == episode.series_id))
+            series = series_result.scalar_one_or_none()
+
+            if storage_backend == "s3":
+                _set_upload_job(
+                    episode_id,
+                    status="processing",
+                    stage="encoding",
+                    progress_percent=35,
+                    message="Encoding and uploading DASH assets to S3...",
+                    error=None,
+                )
+                s3 = S3MediaService()
+                missing = s3.validate_configuration()
+                if missing:
+                    raise RuntimeError(f"S3 storage is selected but missing env vars: {', '.join(missing)}")
+
+                s3_prefix = build_video_hierarchy_prefix(
+                    video_id=video.id,
+                    episode=episode,
+                    season_number=season.season_number if season else None,
+                    series_content_type=series.content_type if series else "series",
+                )
+
+                async with aiofiles.open(input_path, "rb") as f:
+                    raw_bytes = await f.read()
+
+                encode_result = await encode_and_upload_dash_to_s3(
+                    raw_bytes=raw_bytes,
+                    raw_filename=original_name,
+                    video_id=video.id,
+                    s3_prefix=s3_prefix,
+                    s3_service=s3,
+                )
+
+                video.storage_path = f"s3://{s3.bucket_name}/{encode_result['s3_prefix']}"
+            else:
+                _set_upload_job(
+                    episode_id,
+                    status="processing",
+                    stage="encoding",
+                    progress_percent=35,
+                    message="Encoding local DASH assets...",
+                    error=None,
+                )
+                out_dir = os.path.join(VIDEO_STORAGE_PATH, str(video.id))
+                os.makedirs(out_dir, exist_ok=True)
+                local_raw_path = os.path.join(out_dir, "raw.mp4")
+                shutil.copyfile(input_path, local_raw_path)
+
+                encode_result = await encode_video_to_dash(local_raw_path, out_dir)
+
+                video.storage_path = f"/videos/{video.id}"
+
+            _set_upload_job(
+                episode_id,
+                status="processing",
+                stage="finalizing",
+                progress_percent=90,
+                message="Finalizing episode metadata...",
+                error=None,
+            )
+
+            video.duration_seconds = encode_result["duration_seconds"]
+            video.total_segments = encode_result["total_segments"]
+            video.available_qualities = ["360p", "480p", "720p", "1080p"]
+
+            await db.execute(delete(MediaTrack).where(MediaTrack.episode_id == episode.id))
+            for track in encode_result.get("tracks", []):
+                db.add(
+                    MediaTrack(
+                        episode_id=episode.id,
+                        track_type=track.get("track_type", "audio"),
+                        language=(track.get("language") or "und"),
+                        label=track.get("label"),
+                        codec=track.get("codec"),
+                        is_default=bool(track.get("is_default")),
+                    )
+                )
+
+            episode.video_id = video.id
+            episode.playable = True
+            episode.duration_sec = max(episode.duration_sec, encode_result["duration_seconds"])
+
+            await db.commit()
+
+            _set_upload_job(
+                episode_id,
+                job_id=job_id,
+                status="done",
+                stage="complete",
+                progress_percent=100,
+                message="Episode upload processed successfully.",
+                error=None,
+                finished_at=_now_iso(),
+            )
+
+    except Exception as e:
+        try:
+            async with AsyncSessionLocal() as db:
+                episode_result = await db.execute(select(Episode).where(Episode.id == episode_id))
+                episode = episode_result.scalar_one_or_none()
+                if episode:
+                    episode.playable = False
+                    await db.commit()
+        except Exception:
+            pass
+
+        _set_upload_job(
+            episode_id,
+            job_id=job_id,
+            status="failed",
+            stage="error",
+            message="Episode upload failed during background processing.",
+            error=str(e),
+            progress_percent=int((upload_job_status.get(episode_id) or {}).get("progress_percent") or 0),
+            finished_at=_now_iso(),
+        )
+    finally:
+        try:
+            if os.path.exists(input_path):
+                os.remove(input_path)
+            parent_dir = os.path.dirname(input_path)
+            if parent_dir and os.path.isdir(parent_dir):
+                os.rmdir(parent_dir)
+        except Exception:
+            pass
 
 
 def serialize_series(item: Optional[Series]):

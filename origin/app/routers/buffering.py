@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from ..database import get_db
-from ..models import BufferEvent
+from ..models import BufferEvent, Video
 from ..schemas import BufferingReport, BufferingRecommendation
 
 router = APIRouter()
 
-QUALITIES   = ["320p", "480p", "720p"]
+QUALITIES   = ["360p", "480p", "720p", "1080p"]
 MIN_BUFFER  = 10.0
 MAX_BUFFER  = 60.0
 RESERVOIR   = 10.0   # 0 - 10s  → lowest quality
@@ -18,9 +19,9 @@ CUSHION_TOP = 45.0   # 10 - 45s → linear interpolation
 def bba(buffer_seconds: float) -> tuple[str, str]:
     """Buffer-Based Adaptation. Returns (quality, zone)."""
     if buffer_seconds <= RESERVOIR:
-        return "320p", "reservoir"
+        return "360p", "reservoir"
     if buffer_seconds >= CUSHION_TOP:
-        return "720p", "upper_reservoir"
+        return "1080p", "upper_reservoir"
     ratio = (buffer_seconds - RESERVOIR) / (CUSHION_TOP - RESERVOIR)
     idx   = min(int(ratio * len(QUALITIES)), len(QUALITIES) - 1)
     return QUALITIES[idx], "cushion"
@@ -34,8 +35,11 @@ async def report_buffer(data: BufferingReport, db: AsyncSession = Depends(get_db
     prefetch_count = 5 if zone != "reservoir" else 2
     prefetch_segs  = list(range(last_seg + 1, last_seg + 1 + prefetch_count))
 
-    priority              = "audio" if data.current_buffer_seconds < 5.0 else "video"
-    should_prefetch_next  = data.playhead_position > 0
+    priority = "audio" if data.current_buffer_seconds < 5.0 else "video"
+    video_result = await db.execute(select(Video).where(Video.id == data.video_id))
+    video = video_result.scalar_one_or_none()
+    duration = float(video.duration_seconds or 0) if video else 0.0
+    should_prefetch_next = duration > 0 and data.playhead_position >= duration * 0.90
 
     event = BufferEvent(
         session_id=data.session_id,

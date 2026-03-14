@@ -102,6 +102,17 @@ def _segment_cache(video_id: int, quality: str, segment: int) -> str:
     return os.path.join(CACHE_PATH, str(video_id), quality, f"segment_{segment:04d}.m4s")
 
 
+def _media_type_for_path(path: str) -> str:
+    lower = path.lower()
+    if lower.endswith(".m4s"):
+        return "video/mp4"
+    if lower.endswith(".mpd"):
+        return "application/dash+xml"
+    if lower.endswith(".vtt"):
+        return "text/vtt"
+    return "application/octet-stream"
+
+
 # ── endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -182,7 +193,7 @@ async def serve_dash_file(video_id: int, filename: str):
         cache_path = os.path.join(CACHE_PATH, str(video_id), normalized)
         if os.path.exists(cache_path):
             _cache_hits += 1
-            mt = "video/mp4" if normalized.endswith(".m4s") else "application/octet-stream"
+            mt = _media_type_for_path(normalized)
             return FileResponse(cache_path, media_type=mt)
 
         _cache_misses += 1
@@ -194,7 +205,7 @@ async def serve_dash_file(video_id: int, filename: str):
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 async with aiofiles.open(cache_path, "wb") as f:
                     await f.write(r.content)
-                mt = "video/mp4" if normalized.endswith(".m4s") else "application/octet-stream"
+                mt = _media_type_for_path(normalized)
                 return Response(content=r.content, media_type=mt)
 
         raise HTTPException(status_code=404, detail="File not found")

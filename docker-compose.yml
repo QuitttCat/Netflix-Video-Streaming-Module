@@ -38,7 +38,7 @@ services:
       REDIS_URL: redis://redis:6379
       VIDEO_STORAGE_PATH: /videos
       SECRET_KEY: netflix-demo-secret-key-changeme-in-production
-      TMDB_API_KEY: c504943e93b25313461cd6b1e0d51917
+      TMDB_API_KEY: ${TMDB_API_KEY}
       AWS_REGION: ${AWS_REGION}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}

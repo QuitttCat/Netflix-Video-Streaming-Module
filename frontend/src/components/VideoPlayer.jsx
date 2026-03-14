@@ -2,14 +2,14 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import dashjs from 'dashjs'
 import BufferBar from './BufferBar.jsx'
 
-const QUALITIES  = ['320p', '480p', '720p']
+const QUALITIES  = ['360p', '480p', '720p', '1080p']
 const MAX_BUF    = 60
 const RESERVOIR  = 10
 const CUSHION_T  = 45
 
 function bba(buf) {
-  if (buf <= RESERVOIR) return { quality: '320p', zone: 'reservoir' }
-  if (buf >= CUSHION_T) return { quality: '720p', zone: 'upper_reservoir' }
+  if (buf <= RESERVOIR) return { quality: '360p', zone: 'reservoir' }
+  if (buf >= CUSHION_T) return { quality: '1080p', zone: 'upper_reservoir' }
   const r = (buf - RESERVOIR) / (CUSHION_T - RESERVOIR)
   return { quality: QUALITIES[Math.min(Math.floor(r * QUALITIES.length), QUALITIES.length - 1)], zone: 'cushion' }
 }
@@ -22,7 +22,35 @@ const NET_PRESETS = {
   offline: { label: 'Offline (0)',       cap: 0,     color: '#ff0000' },
 }
 
-export default function VideoPlayer({ session, video, user, token }) {
+const LANGUAGE_LABELS = {
+  chi: 'Chinese',
+  eng: 'English',
+  fre: 'French',
+  hin: 'Hindi',
+  ind: 'Indonesian',
+  jpn: 'Japanese',
+  kor: 'Korean',
+  por: 'Portuguese',
+  rus: 'Russian',
+  spa: 'Spanish',
+  tha: 'Thai',
+}
+
+function normalizeLanguage(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function trackLabel(track) {
+  const language = normalizeLanguage(track?.language || track?.lang)
+  return track?.label || LANGUAGE_LABELS[language] || (language ? language.toUpperCase() : 'Unknown')
+}
+
+function pickDefaultSubtitleTrack(tracks) {
+  const defaults = tracks.filter(track => track.is_default)
+  return defaults.find(track => normalizeLanguage(track.language) === 'eng') || defaults[0] || null
+}
+
+export default function VideoPlayer({ session, video, user, token, onPlayNextEpisode }) {
   const videoRef  = useRef(null)
   const playerRef = useRef(null)
   const resumeAppliedRef = useRef(false)
@@ -35,25 +63,65 @@ export default function VideoPlayer({ session, video, user, token }) {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const [zone,        setZone]        = useState('reservoir')
-  const [quality,     setQuality]     = useState('320p')
+  const [quality,     setQuality]     = useState('360p')
   const [playhead,    setPlayhead]    = useState(0)
   const [priority,    setPriority]    = useState('video')
   const [prefetch,    setPrefetch]    = useState(null)
+  const [prefetchStatus, setPrefetchStatus] = useState(null)
+  const [prefetchPolling, setPrefetchPolling] = useState(false)
   const [recQuality,  setRecQuality]  = useState(null)
   const [dashReady,   setDashReady]   = useState(false)
   const [netMode,     setNetMode]     = useState('good')
   const [simBuf,      setSimBuf]      = useState(0)  // simulated buffer for BBA demo
+  const [autoNextCountdown, setAutoNextCountdown] = useState(null)
+  const [audioOptions, setAudioOptions] = useState([])
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState('')
+  const [selectedSubtitleUrl, setSelectedSubtitleUrl] = useState('off')
   const prefetchTriggered = useRef(false)
+  const autoNextCancelledRef = useRef(false)
+  const audioInitDoneRef = useRef(false)
+  const metadataAudioTracksRef = useRef([])
+  const [controlsVisible, setControlsVisible] = useState(true)
+  const idleTimerRef = useRef(null)
+
+  const currentVideoId =
+    session?.video_metadata?.id ||
+    video?.id
+  const trackMetadata = Array.isArray(session?.video_metadata?.tracks)
+    ? session.video_metadata.tracks
+    : Array.isArray(video?.tracks)
+      ? video.tracks
+      : []
+  const metadataAudioTracks = trackMetadata.filter(track => track.track_type === 'audio')
+  metadataAudioTracksRef.current = metadataAudioTracks
+  const subtitleTracks = trackMetadata
+    .filter(track => track.track_type === 'subtitle')
+    .map((track, index) => ({
+      ...track,
+      source_url: track.source_url || `/api/videos/${currentVideoId}/subtitle_${track.subtitle_index ?? index}.vtt`,
+    }))
 
   const duration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0, 1)
+  const knownDuration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0)
   const preset = NET_PRESETS[netMode]
+  const watchedPercent = Math.max(0, Math.min(100, Math.round((playhead / duration) * 100)))
+  const prefetchTriggerProgress = Math.max(0, Math.min(100, Math.round((playhead / duration) / 0.9 * 100)))
+  const prefetchUiStatus = prefetchStatus || {
+    running: false,
+    done: false,
+    progress_percent: 0,
+    completed_steps: 0,
+    total_steps: 0,
+    message: playing
+      ? `Waiting to reach 90% watch progress before next-episode preloading starts (${watchedPercent}% watched).`
+      : 'Preloading status idle. Start playback to enable next-episode preloading.',
+  }
 
   // Initialize dash.js player with smaller buffer targets
   useEffect(() => {
     if (!videoRef.current || !session?.manifest_url) return
 
-    const videoId = session.video_metadata?.id || video.id
-    const manifestUrl = `/api/videos/${videoId}/manifest.mpd`
+    const manifestUrl = session.manifest_url
 
     const player = dashjs.MediaPlayer().create()
     player.initialize(videoRef.current, manifestUrl, true)
@@ -70,6 +138,48 @@ export default function VideoPlayer({ session, video, user, token }) {
         },
       },
     })
+    // Populate the audio dropdown and apply the default track exactly once per stream load.
+    // We use a ref for the metadata so this closure never goes stale without being in deps.
+    const handleStreamInitialized = () => {
+      const dashTracks = player.getTracksFor?.('audio') || []
+      if (!dashTracks.length) return
+
+      const options = dashTracks.map((t, i) => {
+        const lang = normalizeLanguage(t.lang || t.language)
+        const meta = metadataAudioTracksRef.current.find(m => normalizeLanguage(m.language) === lang)
+        return {
+          index: String(i),
+          label: meta?.label || LANGUAGE_LABELS[lang] || (lang ? lang.toUpperCase() : `Track ${i + 1}`),
+          language: lang,
+          is_default: Boolean(meta?.is_default),
+        }
+      })
+      setAudioOptions(options)
+
+      // Apply the default track once — never on subsequent TRACK_CHANGE_RENDERED callbacks
+      if (!audioInitDoneRef.current) {
+        audioInitDoneRef.current = true
+        const defaultOpt = options.find(o => o.is_default) || options[0]
+        if (defaultOpt) {
+          setSelectedAudioIndex(defaultOpt.index)
+          const defaultTrack = dashTracks[Number(defaultOpt.index)]
+          if (defaultTrack) player.setCurrentTrack(defaultTrack)
+        }
+      }
+    }
+
+    // Only mirror what dash.js has selected into the UI — never calls setCurrentTrack (no oscillation)
+    const handleTrackChangeRendered = () => {
+      const dashTracks = player.getTracksFor?.('audio') || []
+      const current = player.getCurrentTrackFor?.('audio')
+      if (!current || !dashTracks.length) return
+      const currentLang = normalizeLanguage(current.lang || current.language)
+      const currentIdx = dashTracks.findIndex(t => normalizeLanguage(t.lang || t.language) === currentLang)
+      if (currentIdx >= 0) setSelectedAudioIndex(String(currentIdx))
+    }
+
+    player.on?.(dashjs.MediaPlayer.events.STREAM_INITIALIZED, handleStreamInitialized)
+    player.on?.(dashjs.MediaPlayer.events.TRACK_CHANGE_RENDERED, handleTrackChangeRendered)
 
     const element = videoRef.current
     element.volume = volume
@@ -92,6 +202,7 @@ export default function VideoPlayer({ session, video, user, token }) {
     setDashReady(true)
 
     return () => {
+      audioInitDoneRef.current = false
       player.destroy()
       playerRef.current = null
     }
@@ -100,6 +211,74 @@ export default function VideoPlayer({ session, video, user, token }) {
   useEffect(() => {
     resumeAppliedRef.current = false
   }, [session?.session_id])
+
+  useEffect(() => {
+    prefetchTriggered.current = false
+    setPrefetch(null)
+    setPrefetchStatus(null)
+    setPrefetchPolling(false)
+    setAutoNextCountdown(null)
+    setAudioOptions([])
+    setSelectedAudioIndex('')
+    setSelectedSubtitleUrl('off')
+    autoNextCancelledRef.current = false
+  }, [session?.session_id])
+
+  useEffect(() => {
+    const defaultSubtitleTrack = pickDefaultSubtitleTrack(subtitleTracks)
+    setSelectedSubtitleUrl(defaultSubtitleTrack?.source_url || 'off')
+  }, [session?.session_id])
+
+  useEffect(() => {
+    const element = videoRef.current
+    if (!element) return
+    const intervalIds = []
+
+    const raiseSubtitleCues = (track) => {
+      if (!track?.cues) return
+      for (let i = 0; i < track.cues.length; i += 1) {
+        const cue = track.cues[i]
+        if (cue && 'line' in cue) {
+          cue.line = -3
+        }
+      }
+    }
+
+    const syncSubtitleTracks = () => {
+      const textTracks = element.textTracks
+      for (let index = 0; index < textTracks.length; index += 1) {
+        textTracks[index].mode = 'disabled'
+      }
+
+      if (selectedSubtitleUrl === 'off') return
+
+      const selectedIndex = subtitleTracks.findIndex(track => track.source_url === selectedSubtitleUrl)
+      if (selectedIndex >= 0 && textTracks[selectedIndex]) {
+        const selectedTrack = textTracks[selectedIndex]
+        selectedTrack.mode = 'showing'
+
+        // Cues may arrive shortly after enabling the track; retry briefly.
+        let attempts = 0
+        const maxAttempts = 10
+        const intervalId = window.setInterval(() => {
+          raiseSubtitleCues(selectedTrack)
+          attempts += 1
+          if (attempts >= maxAttempts || (selectedTrack.cues && selectedTrack.cues.length > 0)) {
+            window.clearInterval(intervalId)
+          }
+        }, 200)
+        intervalIds.push(intervalId)
+      }
+    }
+
+    const timer = window.setTimeout(syncSubtitleTracks, 0)
+    element.addEventListener('loadedmetadata', syncSubtitleTracks)
+    return () => {
+      window.clearTimeout(timer)
+      intervalIds.forEach(id => window.clearInterval(id))
+      element.removeEventListener('loadedmetadata', syncSubtitleTracks)
+    }
+  }, [selectedSubtitleUrl, subtitleTracks, session?.session_id])
 
   useEffect(() => {
     const el = videoRef.current
@@ -181,7 +360,7 @@ export default function VideoPlayer({ session, video, user, token }) {
         const capKbps = NET_PRESETS[netMode].cap
         // Simulate: each tick (500ms), we "download" some data and "consume" some
         // consumption = current quality bitrate worth of 0.5s
-        const qualityBitrates = { '320p': 250, '480p': 800, '720p': 1500 }
+        const qualityBitrates = { '360p': 400, '480p': 800, '720p': 1500, '1080p': 3000 }
         const consumeRate = qualityBitrates[quality] || 800  // kbps being consumed
         const downloadSeconds = capKbps > 0 ? (capKbps / consumeRate) * 0.5 : 0
         const drainSeconds = 0.5  // we consume 0.5s of buffer per 0.5s tick
@@ -294,13 +473,51 @@ export default function VideoPlayer({ session, video, user, token }) {
 
   // Trigger next-episode prefetch at 90%
   useEffect(() => {
-    if (!playing || prefetchTriggered.current) return
-    if (playhead / duration >= 0.9) {
+    if (!playing || prefetchTriggered.current || !currentVideoId || !session?.session_id) return
+    if (!knownDuration || knownDuration <= 0) return
+    if (playhead / knownDuration >= 0.9) {
       prefetchTriggered.current = true
-      fetch(`/api/prefetch/next-episode?currentVideoId=${video.id}&sessionId=${session.session_id}`)
-        .then(r => r.json()).then(setPrefetch).catch(() => {})
+      fetch(
+        `/api/prefetch/next-episode?currentVideoId=${currentVideoId}&sessionId=${session.session_id}` +
+        `&playheadSeconds=${encodeURIComponent(playhead)}&durationSeconds=${encodeURIComponent(knownDuration)}`
+      )
+        .then(r => r.json())
+        .then((payload) => {
+          setPrefetch(payload)
+          setPrefetchStatus(payload)
+          if (payload?.should_start_prefetch) {
+            setPrefetchPolling(true)
+          }
+        })
+        .catch(() => {
+          setPrefetchStatus({
+            done: true,
+            running: false,
+            progress_percent: 0,
+            message: 'Prefetch request failed',
+          })
+        })
     }
-  }, [playhead, duration, playing, video, session])
+  }, [playhead, knownDuration, playing, currentVideoId, session?.session_id])
+
+  useEffect(() => {
+    if (!prefetchPolling || !session?.session_id || !currentVideoId) return
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(
+          `/api/prefetch/status?sessionId=${session.session_id}&currentVideoId=${currentVideoId}`
+        )
+        const payload = await r.json()
+        setPrefetchStatus(payload)
+        if (payload?.done || payload?.running === false) {
+          setPrefetchPolling(false)
+        }
+      } catch (_) {
+        setPrefetchPolling(false)
+      }
+    }, 1000)
+    return () => clearInterval(t)
+  }, [prefetchPolling, session?.session_id, currentVideoId])
 
   const handlePlayPause = () => {
     if (!videoRef.current) return
@@ -340,6 +557,78 @@ export default function VideoPlayer({ session, video, user, token }) {
     }
   }
 
+  const canPlayNextEpisode = !!session?.video_metadata?.next_episode_id
+
+  const handlePlayNextEpisode = async () => {
+    if (!canPlayNextEpisode || !onPlayNextEpisode) return
+    await onPlayNextEpisode(session.video_metadata.next_episode_id)
+  }
+
+  const handleAudioTrackChange = (event) => {
+    const nextIndex = event.target.value
+    setSelectedAudioIndex(nextIndex)
+
+    const player = playerRef.current
+    if (!player?.getTracksFor || !player.setCurrentTrack) return
+
+    const dashTracks = player.getTracksFor('audio') || []
+    const selectedTrack = dashTracks[Number(nextIndex)]
+    if (selectedTrack) {
+      player.setCurrentTrack(selectedTrack)
+    }
+  }
+
+  const handleSubtitleTrackChange = (event) => {
+    setSelectedSubtitleUrl(event.target.value)
+  }
+
+  useEffect(() => {
+    if (autoNextCountdown === null) return
+    if (autoNextCountdown <= 0) return
+
+    const t = window.setTimeout(() => {
+      setAutoNextCountdown(current => {
+        if (current === null) return null
+        if (current <= 1) {
+          if (!autoNextCancelledRef.current && canPlayNextEpisode && onPlayNextEpisode) {
+            onPlayNextEpisode(session.video_metadata.next_episode_id)
+          }
+          return null
+        }
+        return current - 1
+      })
+    }, 1000)
+
+    return () => window.clearTimeout(t)
+  }, [autoNextCountdown, canPlayNextEpisode, onPlayNextEpisode, session?.video_metadata?.next_episode_id])
+
+  const handleVideoEnded = () => {
+    if (!canPlayNextEpisode || !onPlayNextEpisode) return
+    if (autoNextCancelledRef.current) return
+    setAutoNextCountdown(10)
+  }
+
+  const cancelAutoNextEpisode = () => {
+    autoNextCancelledRef.current = true
+    setAutoNextCountdown(null)
+  }
+
+  const resetIdleTimer = useCallback(() => {
+    setControlsVisible(true)
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
+    idleTimerRef.current = window.setTimeout(() => {
+      if (!videoRef.current?.paused) setControlsVisible(false)
+    }, 3000)
+  }, [])
+
+  // Always show controls while paused
+  useEffect(() => {
+    if (!playing) {
+      setControlsVisible(true)
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
+    }
+  }, [playing])
+
   const zoneColor = { reservoir: '#e50914', cushion: '#f5a623', upper_reservoir: '#46d369' }
 
   return (
@@ -349,13 +638,32 @@ export default function VideoPlayer({ session, video, user, token }) {
         {/* Left: player + buffer bar */}
         <div>
           {/* Real video player */}
-          <div id="player-shell" style={{ position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid #222', background: '#000' }}>
+          <div
+            id="player-shell"
+            onMouseMove={resetIdleTimer}
+            onMouseEnter={resetIdleTimer}
+            onMouseLeave={() => { if (playing) setControlsVisible(false) }}
+            style={{ position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid #222', background: '#000', cursor: controlsVisible ? 'default' : 'none' }}
+          >
             <video
               ref={videoRef}
+              className="nf-player"
               style={{ width: '100%', aspectRatio: '16/9', display: 'block', background: '#000' }}
               onLoadedMetadata={() => setDurationReal(videoRef.current?.duration || 0)}
               onClick={handlePlayPause}
-            />
+              onEnded={handleVideoEnded}
+            >
+              {subtitleTracks.map((track) => (
+                <track
+                  key={track.source_url}
+                  kind="subtitles"
+                  src={track.source_url}
+                  srcLang={normalizeLanguage(track.language) || 'und'}
+                  label={trackLabel(track)}
+                  default={track.source_url === selectedSubtitleUrl}
+                />
+              ))}
+            </video>
 
             {autoplayBlocked && (
               <div style={{
@@ -371,10 +679,49 @@ export default function VideoPlayer({ session, video, user, token }) {
               </div>
             )}
 
+            {autoNextCountdown !== null && canPlayNextEpisode && (
+              <div style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                zIndex: 3,
+                display: 'flex',
+                gap: 10,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                background: 'rgba(0,0,0,0.72)',
+                border: '1px solid #4a3a18',
+                borderRadius: 8,
+                padding: '8px 10px',
+              }} role="status" aria-live="polite">
+                <span style={{ fontSize: 13, color: '#f5a623', fontWeight: 700 }}>
+                  Next episode in {autoNextCountdown}s
+                </span>
+                <button
+                  onClick={cancelAutoNextEpisode}
+                  style={{
+                    background: '#2b2b2b',
+                    border: '1px solid #555',
+                    color: '#fff',
+                    borderRadius: 6,
+                    padding: '6px 10px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel Next Episode
+                </button>
+              </div>
+            )}
+
             <div style={{
               position: 'absolute', top: 10, right: 10, padding: '4px 10px',
               background: 'rgba(0,0,0,0.7)', borderRadius: 4, fontSize: 12,
               color: zoneColor[zone],
+              opacity: controlsVisible ? 1 : 0,
+              transition: 'opacity 0.3s ease',
+              pointerEvents: controlsVisible ? 'auto' : 'none',
             }}>
               {quality} {priority === 'audio' ? ' | AUDIO PRIORITY' : ''}
             </div>
@@ -383,6 +730,9 @@ export default function VideoPlayer({ session, video, user, token }) {
               position: 'absolute', left: 12, right: 12, bottom: 12,
               background: 'linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0.1))',
               borderRadius: 8, padding: 10,
+              opacity: controlsVisible ? 1 : 0,
+              transition: 'opacity 0.3s ease',
+              pointerEvents: controlsVisible ? 'auto' : 'none',
             }}>
               <div
                 onClick={seekToPercent}
@@ -414,6 +764,31 @@ export default function VideoPlayer({ session, video, user, token }) {
 
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
                   <select
+                    value={selectedAudioIndex}
+                    onChange={handleAudioTrackChange}
+                    disabled={audioOptions.length === 0}
+                    title="Audio track"
+                    style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12, maxWidth: 140 }}
+                  >
+                    {audioOptions.length === 0 && (
+                      <option value="">Audio</option>
+                    )}
+                    {audioOptions.map(track => (
+                      <option key={track.index} value={track.index}>{track.label}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={selectedSubtitleUrl}
+                    onChange={handleSubtitleTrackChange}
+                    title="Subtitle track"
+                    style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12, maxWidth: 140 }}
+                  >
+                    <option value="off">Subtitles Off</option>
+                    {subtitleTracks.map(track => (
+                      <option key={track.source_url} value={track.source_url}>{trackLabel(track)}</option>
+                    ))}
+                  </select>
+                  <select
                     value={playbackRate}
                     onChange={(e) => setPlaybackRate(Number(e.target.value))}
                     style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12 }}
@@ -432,6 +807,24 @@ export default function VideoPlayer({ session, video, user, token }) {
             <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: 0.2 }}>{video?.title || 'Now Playing'}</div>
             <div style={{ marginTop: 6, color: '#b0b0b0', fontSize: 14, lineHeight: 1.6 }}>
               {video?.description || video?.subtitle || 'No description available.'}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <button
+                onClick={handlePlayNextEpisode}
+                disabled={!canPlayNextEpisode}
+                style={{
+                  background: canPlayNextEpisode ? '#e50914' : '#2b2b2b',
+                  border: canPlayNextEpisode ? '1px solid #b90710' : '1px solid #3d3d3d',
+                  color: '#fff',
+                  borderRadius: 6,
+                  padding: '8px 12px',
+                  fontWeight: 700,
+                  cursor: canPlayNextEpisode ? 'pointer' : 'not-allowed',
+                  opacity: canPlayNextEpisode ? 1 : 0.7,
+                }}
+              >
+                Next Episode →
+              </button>
             </div>
           </div>
 
@@ -465,10 +858,37 @@ export default function VideoPlayer({ session, video, user, token }) {
             </div>
           </div>
 
-          {prefetch?.next_video_id && (
+          <div style={{ marginTop: 12, padding: 12, background: '#0e1b2d', border: '1px solid #2f76d2', borderRadius: 6 }}>
+            <div style={{ fontSize: 12, color: '#9ec6ff', marginBottom: 8, fontWeight: 700 }}>
+              Server Preloading Status {prefetchUiStatus.next_video_id ? `(Episode ${prefetchUiStatus.next_video_id})` : ''}
+            </div>
+            <div style={{ height: 8, background: '#1d2b3d', borderRadius: 999, overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: `${Math.max(0, Math.min(100, Number(prefetchUiStatus.progress_percent || 0)))}%`,
+                  height: '100%',
+                  background: 'linear-gradient(90deg, #2f76d2, #46d369)',
+                  transition: 'width 0.4s ease',
+                }}
+              />
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: '#c7dbff' }}>
+              {prefetchUiStatus.message || (prefetchUiStatus.running ? 'Preloading in progress...' : 'Preload idle')}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 11, color: '#9db1d1' }}>
+              {Number(prefetchUiStatus.completed_steps || 0)} / {Number(prefetchUiStatus.total_steps || 0)} files warmed
+            </div>
+            {!prefetchStatus && (
+              <div style={{ marginTop: 4, fontSize: 11, color: '#9db1d1' }}>
+                Trigger threshold: {prefetchTriggerProgress}% of 90% target reached
+              </div>
+            )}
+          </div>
+
+          {prefetch?.next_video_id && prefetchStatus?.done && (
             <div style={{ marginTop: 12, padding: 12, background: '#0d1f0d',
                           border: '1px solid #46d369', borderRadius: 6, fontSize: 13, color: '#46d369' }}>
-              Preloading Episode {prefetch.next_video_id} -- segments 0-4 ({prefetch.quality})
+              Preloading complete for Episode {prefetch.next_video_id} -- segments 0-4 ({prefetch.quality || '1080p'})
             </div>
           )}
         </div>
@@ -497,6 +917,8 @@ export default function VideoPlayer({ session, video, user, token }) {
             <Row label="Quality"  value={<span style={{ color: '#46d369' }}>{quality}</span>} />
             <Row label="Priority" value={priority} />
             <Row label="Network"  value={<span style={{ color: preset.color }}>{preset.cap} kbps</span>} />
+            <Row label="Audio"    value={audioOptions.find(track => track.index === selectedAudioIndex)?.label || 'Default'} />
+            <Row label="Subtitle" value={selectedSubtitleUrl === 'off' ? 'Off' : (subtitleTracks.find(track => track.source_url === selectedSubtitleUrl)?.label || 'Selected')} />
             {recQuality && recQuality !== quality && (
               <Row label="Rec."   value={<span style={{ color: '#f5a623' }}>{recQuality}</span>} />
             )}
@@ -504,9 +926,9 @@ export default function VideoPlayer({ session, video, user, token }) {
 
           <Panel title="Algorithm Zones">
             <div style={{ fontSize: 11, color: '#555', lineHeight: 2 }}>
-              <div><span style={{ color: '#e50914' }}>|</span> 0-10s = Reservoir = 320p</div>
+              <div><span style={{ color: '#e50914' }}>|</span> 0-10s = Reservoir = 360p</div>
               <div><span style={{ color: '#f5a623' }}>|</span> 10-45s = Cushion = linear</div>
-              <div><span style={{ color: '#46d369' }}>|</span> 45-60s = Upper = 720p</div>
+              <div><span style={{ color: '#46d369' }}>|</span> 45-60s = Upper = 1080p</div>
             </div>
           </Panel>
 

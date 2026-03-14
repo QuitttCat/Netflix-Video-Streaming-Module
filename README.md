@@ -17,6 +17,25 @@ This starts 7 services: PostgreSQL, Redis, Origin Server (FastAPI), 3 CDN Edge N
 
 Open **http://localhost** in your browser.
 
+## Team Seed Snapshot (No Manual Reseed Needed)
+
+This repo now includes `seed_data.sql` generated from a real working database (series, seasons, episodes, tracks, users, videos).
+
+To apply that snapshot on another machine, your friend should initialize Postgres from scratch once:
+
+```bash
+docker compose down -v
+docker compose up --build -d
+```
+
+Important notes:
+
+- `seed_data.sql` is executed by `init.sql` during first database initialization.
+- Docker init scripts run only on a fresh Postgres volume. If data already exists, the seed will not re-run.
+- Metadata is fully seeded, but actual playable media still depends on where `videos.storage_path` points:
+  - local paths like `/videos/...` require local media files in the volume,
+  - `s3://...` paths require valid AWS credentials + bucket access.
+
 ## Seed 100 Popular Movies (TMDB)
 
 Set your TMDB API key in your shell, restart origin, then run the seed script:

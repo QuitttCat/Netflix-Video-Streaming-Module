@@ -91,11 +91,25 @@ export default function App() {
       const data = await r.json()
       if (!r.ok) throw new Error(data.detail || 'Could not start playback')
       setSession(data)
-      setSelVideo(video)
+      setSelVideo({
+        ...video,
+        episode_id: data.video_metadata?.episode_id || video.episode_id,
+        tracks: data.video_metadata?.tracks || video.tracks || [],
+      })
       navigate('player', { videoId: video.id })
     } catch (e) {
       alert('Could not start playback: ' + e.message)
     }
+  }
+
+  const handlePlayNextEpisode = async (nextVideoId) => {
+    if (!nextVideoId) return
+    await handlePlayVideo({
+      id: nextVideoId,
+      title: `Episode ${nextVideoId}`,
+      description: 'Next episode',
+      subtitle: 'Auto queue',
+    })
   }
 
   const handlePlayEpisode = async (episodeId) => {
@@ -115,6 +129,8 @@ export default function App() {
         title: resolved.title || `Episode ${episodeId}`,
         description: resolved.description || '',
         subtitle: resolved.fallback ? 'Demo Fallback' : 'Playable Episode',
+        episode_id: episodeId,
+        tracks: resolved.tracks || [],
       })
     } catch (e) {
       alert(e.message)
@@ -204,7 +220,13 @@ export default function App() {
       )}
 
       {view === 'player' && session && (
-        <VideoPlayer session={session} video={selVideo} user={auth.user} token={auth.token} />
+        <VideoPlayer
+          session={session}
+          video={selVideo}
+          user={auth.user}
+          token={auth.token}
+          onPlayNextEpisode={handlePlayNextEpisode}
+        />
       )}
 
       {view === 'player' && !session && (

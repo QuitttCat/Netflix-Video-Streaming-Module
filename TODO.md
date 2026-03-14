@@ -6,6 +6,4 @@
 
 ### Need to write some tests for backend apis and also testing the cdn node selection logic under different simulated network conditions
 
-### Need to make a simple recommendation system which can be imported as some library functions and called from the frontend to show "Recommended for you" videos based on what you've watched before. This can be a simple collaborative filtering algorithm using user-video interactions stored in the database.
-
 ### Need to separate the admin dashboard and also user dashboard, make them separate service if necessary. The admin dashboard can have more detailed metrics and controls for managing the CDN nodes, while the user dashboard can focus on video browsing and playback.

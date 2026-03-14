@@ -156,7 +156,7 @@ def ensure_demo_video_exists(cur):
         (
             "Demo Episode 1",
             "Autocreated demo video entry",
-            ["320p", "480p", "720p"],
+            ["360p", "480p", "720p", "1080p"],
         ),
     )
 

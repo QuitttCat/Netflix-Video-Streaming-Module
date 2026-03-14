@@ -1,16 +1,6 @@
 -- Netflix Streaming Demo - Database Init
 
--- Drop everything cleanly so each fresh container starts from scratch
-DROP TABLE IF EXISTS watch_progress CASCADE;
-DROP TABLE IF EXISTS media_tracks   CASCADE;
-DROP TABLE IF EXISTS episodes       CASCADE;
-DROP TABLE IF EXISTS seasons        CASCADE;
-DROP TABLE IF EXISTS series         CASCADE;
-DROP TABLE IF EXISTS buffer_events CASCADE;
-DROP TABLE IF EXISTS sessions     CASCADE;
-DROP TABLE IF EXISTS cdn_nodes    CASCADE;
-DROP TABLE IF EXISTS videos       CASCADE;
-DROP TABLE IF EXISTS users        CASCADE;
+-- Non-destructive init: preserve existing data between container restarts.
 
 CREATE TABLE IF NOT EXISTS videos (
     id          SERIAL PRIMARY KEY,
@@ -45,7 +35,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     video_id        INTEGER REFERENCES videos(id),
     cdn_node_id     VARCHAR(64) REFERENCES cdn_nodes(id),
     status          VARCHAR(16) DEFAULT 'active',
-    quality         VARCHAR(8)  DEFAULT '320p',
+    quality         VARCHAR(8)  DEFAULT '360p',
     playhead_position FLOAT     DEFAULT 0.0,
     created_at      TIMESTAMP   DEFAULT NOW(),
     ended_at        TIMESTAMP
@@ -141,17 +131,25 @@ CREATE TABLE IF NOT EXISTS video_progress (
     UNIQUE(user_id, video_id)
 );
 
--- Sample videos
-INSERT INTO videos (title, description, duration_seconds, total_segments, available_qualities, storage_path)
-VALUES
-    ('Demo Episode 1', 'First episode - Intelligent Buffering Demo', 900, 150,
-    ARRAY['320p','480p','720p'], '/videos/1'),
-    ('Demo Episode 2', 'Second episode - CDN Failover Demo', 900, 150,
-    ARRAY['320p','480p','720p'], '/videos/2')
-ON CONFLICT DO NOTHING;
+-- Load repository seed generated from a real working database.
+\i /docker-entrypoint-initdb.d/seed_data.sql
 
--- Link episode 1 -> episode 2 for next-episode preload demo
-UPDATE videos SET next_episode_id = 2 WHERE id = 1;
+-- Fallback demo rows only if seed_data.sql produced no videos.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM videos) THEN
+        INSERT INTO videos (title, description, duration_seconds, total_segments, available_qualities, storage_path)
+        VALUES
+            ('Demo Episode 1', 'First episode - Intelligent Buffering Demo', 900, 150,
+            ARRAY['360p','480p','720p','1080p'], '/videos/1'),
+            ('Demo Episode 2', 'Second episode - CDN Failover Demo', 900, 150,
+            ARRAY['360p','480p','720p','1080p'], '/videos/2')
+        ON CONFLICT DO NOTHING;
+
+        UPDATE videos SET next_episode_id = 2 WHERE id = 1;
+    END IF;
+END
+$$;
 
 -- Catalog metadata is now seeded by script:
 -- python -m app.scripts.seed_tmdb_movies --limit 100

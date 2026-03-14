@@ -106,6 +106,7 @@ async def upload_video_thumbnail(
     video_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
 ):
     result = await db.execute(select(Video).where(Video.id == video_id))
     video = result.scalar_one_or_none()
@@ -264,6 +265,8 @@ async def get_dash_file(video_id: int, filename: str, db: AsyncSession = Depends
         media_type = "video/mp4"
     elif normalized.endswith(".mpd"):
         media_type = "application/dash+xml"
+    elif normalized.endswith(".vtt"):
+        media_type = "text/vtt"
     else:
         media_type = "application/octet-stream"
     return FileResponse(path, media_type=media_type)
@@ -275,13 +278,14 @@ async def upload_video(
     description: str = "",
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
 ):
     storage_backend = (os.getenv("VIDEO_STORAGE_BACKEND", "s3") or "s3").lower()
 
     video = Video(
         title=title,
         description=description,
-        available_qualities=["320p", "480p", "720p"],
+        available_qualities=["360p", "480p", "720p", "1080p"],
     )
     db.add(video)
     await db.flush()
