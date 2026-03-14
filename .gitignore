@@ -26,3 +26,6 @@ Thumbs.db
 
 # Encoded video files (large)
 /videos/
+
+preview_trailer.txt
+*.html
