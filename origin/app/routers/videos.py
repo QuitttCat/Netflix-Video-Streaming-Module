@@ -3,14 +3,14 @@ import os
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 
 from ..auth import require_admin
 from ..database import get_db
-from ..models import Video, Episode, Session
+from ..models import Video, Episode, Series, Session
 from ..services.s3_media import S3MediaService, join_key, parse_s3_uri
 from ..services.video_packaging import build_video_hierarchy_prefix, encode_and_upload_dash_to_s3, encode_video_to_dash
 
@@ -101,6 +101,8 @@ async def get_video_thumbnail(video_id: int, db: AsyncSession = Depends(get_db))
         if video.storage_path and str(video.storage_path).startswith("s3://"):
             try:
                 _, s3_prefix = parse_s3_uri(str(video.storage_path))
+                if thumb_ref and not thumb_ref.startswith("s3://"):
+                    add_key(join_key(s3_prefix, thumb_ref))
                 for name in ("thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png", "thumbnail.webp"):
                     add_key(join_key(s3_prefix, name))
             except Exception:
@@ -135,6 +137,43 @@ async def get_video_thumbnail(video_id: int, db: AsyncSession = Depends(get_db))
                             continue
             except Exception:
                 pass
+
+    # If episode-specific thumbnail cannot be fetched, mirror series thumbnail behavior.
+    series_result = await db.execute(
+        select(Series)
+        .join(Episode, Episode.series_id == Series.id)
+        .where(Episode.video_id == video.id)
+        .order_by(Episode.id.asc())
+        .limit(1)
+    )
+    series = series_result.scalar_one_or_none()
+    if series:
+        series_thumb = (series.logo_url or "").strip()
+        if series_thumb:
+            if series_thumb.startswith("s3://"):
+                try:
+                    _, key = parse_s3_uri(series_thumb)
+                    s3 = S3MediaService()
+                    body, content_type = await run_in_threadpool(s3.get_object_bytes, key)
+                    return Response(content=body, media_type=content_type or "image/jpeg")
+                except Exception:
+                    pass
+            elif series_thumb.startswith("http://") or series_thumb.startswith("https://"):
+                return RedirectResponse(url=series_thumb)
+            else:
+                local_series_thumb = (
+                    series_thumb
+                    if os.path.isabs(series_thumb)
+                    else os.path.join(VIDEO_STORAGE_PATH, "series", str(series.id), series_thumb)
+                )
+                if os.path.exists(local_series_thumb):
+                    mt = "image/png" if local_series_thumb.lower().endswith(".png") else "image/jpeg"
+                    return FileResponse(local_series_thumb, media_type=mt)
+
+        if series.poster_url:
+            return RedirectResponse(url=series.poster_url)
+        if series.backdrop_url:
+            return RedirectResponse(url=series.backdrop_url)
 
     fallback_path = os.path.join(VIDEO_STORAGE_PATH, "defaults", "thumbnail.jpg")
     if os.path.exists(fallback_path):
