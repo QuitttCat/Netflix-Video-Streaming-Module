@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .database import engine, Base, AsyncSessionLocal
-from .models import User, Series, Season, Episode, MediaTrack, Video
+from .models import User, Series, Season, Episode, MediaTrack, Video, SeriesTrailer
 from .auth import hash_password
 from .routers import cdn, playback, buffering, prefetch, monitor, videos, catalog, media_storage
 from .routers import auth as auth_router
@@ -24,6 +24,29 @@ async def lifespan(app: FastAPI):
                 updated_at TIMESTAMP DEFAULT NOW(),
                 UNIQUE(user_id, video_id)
             )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS series_trailers (
+                id SERIAL PRIMARY KEY,
+                series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                title VARCHAR(255),
+                storage_path VARCHAR(1024) NOT NULL,
+                content_type VARCHAR(128) DEFAULT 'video/mp4',
+                file_size_bytes BIGINT DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_by_user_id INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_series_trailers_series_active
+            ON series_trailers(series_id)
+            WHERE is_active = TRUE
+        """))
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_series_trailers_series_id
+            ON series_trailers(series_id)
         """))
 
     # Seed minimal default data (users + one demo playable episode)

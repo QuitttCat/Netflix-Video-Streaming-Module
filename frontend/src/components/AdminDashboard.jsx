@@ -30,6 +30,10 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const [newEpisodeNumber, setNewEpisodeNumber] = useState('1')
   const [seriesSearch, setSeriesSearch] = useState('')
   const [seriesThumbFile, setSeriesThumbFile] = useState(null)
+  const [trailerFileBySeries, setTrailerFileBySeries] = useState({})
+  const [trailerTitleBySeries, setTrailerTitleBySeries] = useState({})
+  const [uploadingTrailerSeriesId, setUploadingTrailerSeriesId] = useState(null)
+  const [cdnHistoryByNode, setCdnHistoryByNode] = useState({})
   const wsRef = useRef(null)
   const uploadPollTimeoutsRef = useRef({})
 
@@ -79,7 +83,25 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     wsRef.current = ws
 
     ws.onopen    = () => setConnected(true)
-    ws.onmessage = (e) => setData(JSON.parse(e.data))
+    ws.onmessage = (e) => {
+      const payload = JSON.parse(e.data)
+      setData(payload)
+      const now = Date.now()
+      const nodes = Array.isArray(payload?.cdn_nodes) ? payload.cdn_nodes : []
+      setCdnHistoryByNode(prev => {
+        const next = { ...prev }
+        nodes.forEach(node => {
+          const current = Array.isArray(next[node.id]) ? next[node.id] : []
+          next[node.id] = [...current, {
+            ts: now,
+            latency_ms: Number(node.latency_ms || 0),
+            load_percent: Number(node.load_percent || 0),
+            cache_hit_ratio: Number(node.cache_hit_ratio || 0),
+          }].slice(-20)
+        })
+        return next
+      })
+    }
     ws.onclose   = () => setConnected(false)
     ws.onerror   = () => setConnected(false)
 
@@ -591,6 +613,63 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
     }
   }
 
+  const uploadSeriesTrailer = async (seriesId) => {
+    const file = trailerFileBySeries[seriesId]
+    if (!file) {
+      setUploadMsg('Select a trailer file first')
+      return
+    }
+    try {
+      setUploadingTrailerSeriesId(seriesId)
+      const form = new FormData()
+      form.append('file', file)
+      form.append('title', trailerTitleBySeries[seriesId] || '')
+
+      const r = await fetch(`/api/catalog/admin/series/${seriesId}/trailer`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Trailer upload failed')
+
+      setTrailerFileBySeries(prev => {
+        const copy = { ...prev }
+        delete copy[seriesId]
+        return copy
+      })
+      setTrailerTitleBySeries(prev => {
+        const copy = { ...prev }
+        delete copy[seriesId]
+        return copy
+      })
+      setUploadMsg('Trailer uploaded and linked successfully')
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Trailer upload error: ${e.message}`)
+    } finally {
+      setUploadingTrailerSeriesId(null)
+    }
+  }
+
+  const deleteSeriesTrailer = async (seriesId) => {
+    if (!window.confirm('Remove active trailer for this series?')) return
+    try {
+      const r = await fetch(`/api/catalog/admin/series/${seriesId}/trailer`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const t = await r.text()
+      const payload = parseMaybeJson(t)
+      if (!r.ok) throw new Error(payload.detail || payload.raw || 'Trailer delete failed')
+      setUploadMsg('Trailer unlinked successfully')
+      await fetchSeriesOverview()
+    } catch (e) {
+      setUploadMsg(`Trailer delete error: ${e.message}`)
+    }
+  }
+
   const uploadEpisodeThumbnail = async (episode) => {
     setUploadMsg('')
     if (!episode.video_id) {
@@ -704,6 +783,18 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
               </div>
             ) : (
               <Empty msg="No CDN node telemetry yet." />
+            )}
+          </Section>
+
+          <Section title="CDN Visual Metrics">
+            {data?.cdn_nodes?.length > 0 ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                {data.cdn_nodes.map(node => (
+                  <CdnTrendCard key={`trend-${node.id}`} node={node} points={cdnHistoryByNode[node.id] || []} />
+                ))}
+              </div>
+            ) : (
+              <Empty msg="No CDN telemetry available yet for charting." />
             )}
           </Section>
 
@@ -829,6 +920,9 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                       <div style={{ fontSize: 11, color: '#999', marginTop: 5 }}>
                         {sr.is_movie ? 'Movie' : 'Series'} • Episodes: {sr.total_episodes} • Missing: <span style={{ color: sr.missing_episodes > 0 ? '#e50914' : '#46d369' }}>{sr.missing_episodes}</span>
                       </div>
+                      <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+                        Trailer: <span style={{ color: sr.trailer?.available ? '#46d369' : '#f5a623' }}>{sr.trailer?.available ? 'Linked' : 'Not linked'}</span>
+                      </div>
                     </button>
                   )
                 })}
@@ -926,6 +1020,39 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
                 </div>
                 <div style={{ fontSize: 12, color: '#999', maxWidth: 500 }}>
                   {modalSeries.synopsis || 'No series description yet.'}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: '#aaa' }}>
+                  Active Trailer: <span style={{ color: modalSeries.trailer?.available ? '#46d369' : '#f5a623' }}>{modalSeries.trailer?.available ? (modalSeries.trailer?.title || 'Linked') : 'Not linked'}</span>
+                </div>
+                <input
+                  type="text"
+                  value={trailerTitleBySeries[modalSeries.series_id] || ''}
+                  onChange={e => setTrailerTitleBySeries(prev => ({ ...prev, [modalSeries.series_id]: e.target.value }))}
+                  placeholder="Trailer title (optional)"
+                  style={{ background: '#0f0f0f', border: '1px solid #333', color: '#fff', borderRadius: 4, padding: '8px 10px', minWidth: 280 }}
+                />
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime,.mov,.m4v"
+                  onChange={e => setTrailerFileBySeries(prev => ({ ...prev, [modalSeries.series_id]: e.target.files?.[0] || null }))}
+                  style={{ color: '#aaa' }}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => uploadSeriesTrailer(modalSeries.series_id)}
+                    disabled={uploadingTrailerSeriesId === modalSeries.series_id}
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '7px 10px', cursor: 'pointer', opacity: uploadingTrailerSeriesId === modalSeries.series_id ? 0.65 : 1 }}
+                  >
+                    {uploadingTrailerSeriesId === modalSeries.series_id ? 'Uploading Trailer…' : 'Upload Trailer'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteSeriesTrailer(modalSeries.series_id)}
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '7px 10px', cursor: 'pointer' }}
+                  >
+                    Remove Trailer
+                  </button>
                 </div>
               </div>
             </div>
@@ -1187,6 +1314,62 @@ function LoadBar({ value }) {
       </span>
       <span style={{ color: '#fff' }}>{value.toFixed(0)}%</span>
     </span>
+  )
+}
+
+function CdnTrendCard({ node, points }) {
+  const latencyValues = points.map(p => p.latency_ms)
+  const loadValues = points.map(p => p.load_percent)
+  const cacheValues = points.map(p => p.cache_hit_ratio)
+
+  return (
+    <div className="admin-panel" style={{ padding: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>{node.name}</div>
+        <div style={{ fontSize: 11, color: '#888' }}>{node.location}</div>
+      </div>
+      <MetricLine label="Latency (ms)" value={`${Number(node.latency_ms || 0).toFixed(0)} ms`} color="#46d369" values={latencyValues} max={60} />
+      <MetricLine label="Load (%)" value={`${Number(node.load_percent || 0).toFixed(0)}%`} color="#e50914" values={loadValues} max={100} />
+      <MetricLine label="Cache Hit (%)" value={`${Number(node.cache_hit_ratio || 0).toFixed(1)}%`} color="#f5a623" values={cacheValues} max={100} />
+    </div>
+  )
+}
+
+function MetricLine({ label, value, color, values, max }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#999', marginBottom: 5 }}>
+        <span>{label}</span>
+        <span style={{ color: '#ddd' }}>{value}</span>
+      </div>
+      <Sparkline values={values} color={color} max={max} />
+    </div>
+  )
+}
+
+function Sparkline({ values, color, max = 100 }) {
+  const width = 220
+  const height = 46
+  if (!values.length) {
+    return (
+      <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', background: '#0f0f0f', borderRadius: 6, border: '1px solid #2a2a2a' }}>
+        <path d={`M0 ${height - 1} L${width} ${height - 1}`} stroke="#2d2d2d" strokeWidth="1" fill="none" />
+      </svg>
+    )
+  }
+
+  const safeMax = Math.max(1, max)
+  const points = values.map((v, idx) => {
+    const x = (idx / Math.max(1, values.length - 1)) * width
+    const norm = Math.max(0, Math.min(1, Number(v || 0) / safeMax))
+    const y = height - norm * (height - 6) - 3
+    return `${x},${y}`
+  }).join(' ')
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', background: '#0f0f0f', borderRadius: 6, border: '1px solid #2a2a2a' }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   )
 }
 

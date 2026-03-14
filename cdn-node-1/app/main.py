@@ -102,6 +102,10 @@ def _segment_cache(video_id: int, quality: str, segment: int) -> str:
     return os.path.join(CACHE_PATH, str(video_id), quality, f"segment_{segment:04d}.m4s")
 
 
+def _trailer_cache(series_id: int, filename: str) -> str:
+    return os.path.join(CACHE_PATH, "trailers", str(series_id), filename)
+
+
 def _media_type_for_path(path: str) -> str:
     lower = path.lower()
     if lower.endswith(".m4s"):
@@ -209,5 +213,35 @@ async def serve_dash_file(video_id: int, filename: str):
                 return Response(content=r.content, media_type=mt)
 
         raise HTTPException(status_code=404, detail="File not found")
+    finally:
+        _active_reqs -= 1
+
+
+@app.get("/trailers/{series_id}/{filename:path}")
+async def serve_trailer(series_id: int, filename: str):
+    global _cache_hits, _cache_misses, _active_reqs
+    normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
+    if normalized.startswith("../") or normalized == "..":
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    _active_reqs += 1
+    try:
+        cache_path = _trailer_cache(series_id, normalized)
+        mt = _media_type_for_path(normalized)
+        if os.path.exists(cache_path):
+            _cache_hits += 1
+            return FileResponse(cache_path, media_type=mt, headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=300"})
+
+        _cache_misses += 1
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{ORIGIN_URL}/api/catalog/series/{series_id}/trailer/{normalized}", timeout=30.0
+            )
+            if r.status_code == 200:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                async with aiofiles.open(cache_path, "wb") as f:
+                    await f.write(r.content)
+                return Response(content=r.content, media_type=(r.headers.get("content-type") or mt), headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=300"})
+
+        raise HTTPException(status_code=404, detail="Trailer not found")
     finally:
         _active_reqs -= 1

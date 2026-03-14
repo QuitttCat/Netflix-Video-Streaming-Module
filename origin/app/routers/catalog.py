@@ -9,13 +9,13 @@ import aiofiles
 from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse, RedirectResponse, Response
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from ..auth import get_current_user, require_admin
 from ..database import get_db, AsyncSessionLocal
-from ..models import Series, Season, Episode, MediaTrack, User, Video, WatchProgress
+from ..models import Series, Season, Episode, MediaTrack, User, Video, WatchProgress, SeriesTrailer
 from ..services.s3_media import S3MediaService, join_key, parse_s3_uri
 from ..services.video_packaging import (
     build_video_hierarchy_prefix,
@@ -106,6 +106,62 @@ def _series_thumbnail_api_url(series_id: int) -> str:
     return f"/api/catalog/series/{series_id}/thumbnail"
 
 
+def _series_trailer_stream_api_url(series_id: int) -> str:
+    return f"/api/catalog/series/{series_id}/trailer/stream.mp4"
+
+
+def _series_trailer_cdn_path(series_id: int) -> str:
+    return f"/trailers/{series_id}/stream.mp4"
+
+
+def _series_trailer_payload(trailer: SeriesTrailer | None, series_id: int) -> dict:
+    if not trailer:
+        return {
+            "available": False,
+            "series_id": series_id,
+            "stream_url": None,
+            "cdn_path": _series_trailer_cdn_path(series_id),
+        }
+    return {
+        "available": True,
+        "id": trailer.id,
+        "series_id": trailer.series_id,
+        "title": trailer.title,
+        "storage_path": trailer.storage_path,
+        "content_type": trailer.content_type,
+        "file_size_bytes": int(trailer.file_size_bytes or 0),
+        "is_active": bool(trailer.is_active),
+        "stream_url": _series_trailer_stream_api_url(series_id),
+        "cdn_path": _series_trailer_cdn_path(series_id),
+        "updated_at": trailer.updated_at.isoformat() if trailer.updated_at else None,
+    }
+
+
+async def _get_active_trailers_for_series(db: AsyncSession, series_ids: list[int]) -> dict[int, SeriesTrailer]:
+    if not series_ids:
+        return {}
+    rows = await db.execute(
+        select(SeriesTrailer)
+        .where(SeriesTrailer.series_id.in_(series_ids), SeriesTrailer.is_active == True)
+        .order_by(SeriesTrailer.series_id.asc(), SeriesTrailer.updated_at.desc(), SeriesTrailer.id.desc())
+    )
+    trailers = rows.scalars().all()
+    out: dict[int, SeriesTrailer] = {}
+    for trailer in trailers:
+        out.setdefault(trailer.series_id, trailer)
+    return out
+
+
+async def _get_active_trailer_for_series(db: AsyncSession, series_id: int) -> SeriesTrailer | None:
+    result = await db.execute(
+        select(SeriesTrailer)
+        .where(SeriesTrailer.series_id == series_id, SeriesTrailer.is_active == True)
+        .order_by(SeriesTrailer.updated_at.desc(), SeriesTrailer.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 def _fallback_svg(label: str = "NETFLIX") -> str:
     return (
         "<svg xmlns='http://www.w3.org/2000/svg' width='1280' height='720'>"
@@ -149,6 +205,11 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
     movie_result = await db.execute(select(Series).where(Series.content_type == "movie").order_by(Series.popularity.desc()).limit(20))
     movie_items = movie_result.scalars().all()
 
+    trailer_map = await _get_active_trailers_for_series(
+        db,
+        list({*(s.id for s in trending), *(s.id for s in series_items), *(s.id for s in movie_items), (featured.id if featured else 0)}),
+    )
+
     continue_result = await db.execute(
         select(Episode, Series, Season, Video)
         .join(Series, Series.id == Episode.series_id)
@@ -161,7 +222,7 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
 
     return {
         "user": {"id": user.id, "username": user.username, "role": user.role},
-        "hero": serialize_series(featured) if featured else None,
+        "hero": serialize_series(featured, trailer_map.get(featured.id) if featured else None) if featured else None,
         "rows": [
             {
                 "id": "continue",
@@ -180,9 +241,9 @@ async def get_home_catalog(db: AsyncSession = Depends(get_db), user: User = Depe
                     for e, s, se, v in continue_items
                 ],
             },
-            {"id": "trending", "title": "Trending Now", "type": "series", "items": [serialize_series(x) for x in trending]},
-            {"id": "series", "title": "Popular Series", "type": "series", "items": [serialize_series(x) for x in series_items]},
-            {"id": "movies", "title": "Top Movies", "type": "series", "items": [serialize_series(x) for x in movie_items]},
+            {"id": "trending", "title": "Trending Now", "type": "series", "items": [serialize_series(x, trailer_map.get(x.id)) for x in trending]},
+            {"id": "series", "title": "Popular Series", "type": "series", "items": [serialize_series(x, trailer_map.get(x.id)) for x in series_items]},
+            {"id": "movies", "title": "Top Movies", "type": "series", "items": [serialize_series(x, trailer_map.get(x.id)) for x in movie_items]},
         ],
     }
 
@@ -197,6 +258,8 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
 
     seasons = season_result.scalars().all()
     episodes = episode_result.scalars().all()
+    trailer_rows = await db.execute(select(SeriesTrailer).where(SeriesTrailer.is_active == True))
+    active_trailer_by_series = {t.series_id: t for t in trailer_rows.scalars().all()}
 
     seasons_by_series = {}
     for s in seasons:
@@ -261,6 +324,7 @@ async def admin_series_overview(db: AsyncSession = Depends(get_db), admin: User 
                 "total_episodes": total_count,
                 "missing_episodes": missing_count,
                 "seasons": season_items,
+                "trailer": _series_trailer_payload(active_trailer_by_series.get(sr.id), sr.id),
             }
         )
 
@@ -296,9 +360,12 @@ async def list_series_episodes(series_id: int, db: AsyncSession = Depends(get_db
             }
         )
 
+    trailer = await _get_active_trailer_for_series(db, series_id)
+
     return {
         "series_id": series_id,
-        "series": serialize_series(series),
+        "series": serialize_series(series, trailer),
+        "trailer": _series_trailer_payload(trailer, series_id),
         "episodes": [
             {
                 "episode_id": e.id,
@@ -389,6 +456,138 @@ async def admin_upload_series_thumbnail(
     await db.commit()
     await db.refresh(series)
     return {"ok": True, "series_id": series_id, "thumbnail_url": _series_thumbnail_api_url(series_id)}
+
+
+@router.get("/series/{series_id}/trailer")
+async def get_series_trailer(series_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    series_result = await db.execute(select(Series).where(Series.id == series_id))
+    series = series_result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    trailer = await _get_active_trailer_for_series(db, series_id)
+    return {"series_id": series_id, "trailer": _series_trailer_payload(trailer, series_id)}
+
+
+@router.get("/series/{series_id}/trailer/stream.mp4")
+async def stream_series_trailer(series_id: int, db: AsyncSession = Depends(get_db)):
+    trailer = await _get_active_trailer_for_series(db, series_id)
+    if not trailer:
+        raise HTTPException(status_code=404, detail="Trailer not found")
+
+    path = (trailer.storage_path or "").strip()
+    if path.startswith("s3://"):
+        try:
+            _, key = parse_s3_uri(path)
+            s3 = S3MediaService()
+            body, content_type = await run_in_threadpool(s3.get_object_bytes, key)
+            return Response(content=body, media_type=content_type or trailer.content_type or "video/mp4")
+        except Exception:
+            raise HTTPException(status_code=404, detail="Trailer asset not available")
+
+    local_path = path if os.path.isabs(path) else os.path.join(VIDEO_STORAGE_PATH, path.lstrip("/"))
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=404, detail="Trailer asset not available")
+    return FileResponse(local_path, media_type=trailer.content_type or "video/mp4")
+
+
+@router.get("/series/{series_id}/trailer/{filename:path}")
+async def stream_series_trailer_by_name(series_id: int, filename: str, db: AsyncSession = Depends(get_db)):
+    normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
+    if normalized.startswith("../") or normalized == "..":
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return await stream_series_trailer(series_id=series_id, db=db)
+
+
+@router.get("/admin/series/{series_id}/trailer")
+async def admin_get_series_trailer(series_id: int, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
+    series_result = await db.execute(select(Series).where(Series.id == series_id))
+    series = series_result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    trailer = await _get_active_trailer_for_series(db, series_id)
+    return {"series_id": series_id, "trailer": _series_trailer_payload(trailer, series_id)}
+
+
+@router.post("/admin/series/{series_id}/trailer")
+async def admin_upload_series_trailer(
+    series_id: int,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    series_result = await db.execute(select(Series).where(Series.id == series_id))
+    series = series_result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Trailer file is empty")
+
+    ext = os.path.splitext(file.filename or "trailer.mp4")[1].lower() or ".mp4"
+    if ext not in {".mp4", ".webm", ".mov", ".m4v"}:
+        raise HTTPException(status_code=400, detail="Trailer must be mp4/webm/mov/m4v")
+
+    content_type = file.content_type or "video/mp4"
+    storage_backend = (os.getenv("VIDEO_STORAGE_BACKEND", "s3") or "s3").lower()
+
+    if storage_backend == "s3":
+        s3 = S3MediaService()
+        missing = s3.validate_configuration()
+        if missing:
+            raise HTTPException(status_code=500, detail=f"Missing S3 env vars: {', '.join(missing)}")
+        key = join_key(f"netflix/series/series-{series_id}/trailers", f"official-trailer{ext}")
+        await run_in_threadpool(s3.upload_bytes, key, payload, content_type)
+        storage_path = f"s3://{s3.bucket_name}/{key}"
+    else:
+        folder = os.path.join(VIDEO_STORAGE_PATH, "series", str(series_id), "trailers")
+        os.makedirs(folder, exist_ok=True)
+        file_name = f"official-trailer{ext}"
+        local_path = os.path.join(folder, file_name)
+        async with aiofiles.open(local_path, "wb") as out:
+            await out.write(payload)
+        storage_path = local_path
+
+    await db.execute(
+        update(SeriesTrailer)
+        .where(SeriesTrailer.series_id == series_id, SeriesTrailer.is_active == True)
+        .values(is_active=False, updated_at=datetime.utcnow())
+    )
+
+    trailer = SeriesTrailer(
+        series_id=series_id,
+        title=title.strip() or f"{series.title} Trailer",
+        storage_path=storage_path,
+        content_type=content_type,
+        file_size_bytes=len(payload),
+        is_active=True,
+        created_by_user_id=admin.id,
+        updated_at=datetime.utcnow(),
+    )
+    db.add(trailer)
+    await db.commit()
+    await db.refresh(trailer)
+
+    return {"ok": True, "series_id": series_id, "trailer": _series_trailer_payload(trailer, series_id)}
+
+
+@router.delete("/admin/series/{series_id}/trailer")
+async def admin_delete_series_trailer(series_id: int, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
+    series_result = await db.execute(select(Series).where(Series.id == series_id))
+    series = series_result.scalar_one_or_none()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    trailer = await _get_active_trailer_for_series(db, series_id)
+    if not trailer:
+        return {"ok": True, "series_id": series_id, "trailer": _series_trailer_payload(None, series_id)}
+
+    trailer.is_active = False
+    trailer.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"ok": True, "series_id": series_id, "trailer": _series_trailer_payload(None, series_id)}
 
 
 @router.delete("/admin/series/{series_id}/thumbnail")
@@ -1027,7 +1226,7 @@ async def _process_episode_upload_job(
             pass
 
 
-def serialize_series(item: Optional[Series]):
+def serialize_series(item: Optional[Series], trailer: Optional[SeriesTrailer] = None):
     if not item:
         return None
     return {
@@ -1044,6 +1243,7 @@ def serialize_series(item: Optional[Series]):
         "popularity": item.popularity,
         "content_type": item.content_type,
         "is_movie": item.content_type == "movie",
+        "preview_trailer": _series_trailer_payload(trailer, item.id),
     }
 
 

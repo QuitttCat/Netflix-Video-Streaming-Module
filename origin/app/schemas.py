@@ -57,3 +57,16 @@ class BufferingRecommendation(BaseModel):
     prefetch_segments:          List[int]
     should_prefetch_next_episode: bool
     priority:                   str
+
+
+class SeriesTrailerOut(BaseModel):
+    id: int
+    series_id: int
+    title: Optional[str] = None
+    storage_path: str
+    content_type: str
+    file_size_bytes: int = 0
+    is_active: bool
+    stream_url: str
+    cdn_path: str
+    updated_at: Optional[datetime] = None

@@ -30,6 +30,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # pgadmin:
+  #   image: dpage/pgadmin4:8
+  #   container_name: netflix_pgadmin
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@netflix.com}
+  #     PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin123}
+  #     PGADMIN_CONFIG_SERVER_MODE: "False"
+  #   volumes:
+  #     - pgadmin_data:/var/lib/pgadmin
+  #   ports:
+  #     - "5050:80"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+
   origin:
     build:
       context: ./origin
@@ -135,3 +150,4 @@ volumes:
   cdn1_cache:
   cdn2_cache:
   cdn3_cache:
+  #pgadmin_data:

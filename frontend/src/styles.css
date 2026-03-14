@@ -144,13 +144,14 @@ video.nf-player::cue {
   overflow: hidden;
   background: var(--nf-surface);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  transition: transform 360ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 300ms ease, border-color 300ms ease;
   scroll-snap-align: start;
+  transform-origin: center center;
+  will-change: transform;
 }
 
 .nf-card:hover {
-  transform: scale(1.08);
-  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 22px 40px rgba(0, 0, 0, 0.55);
   border-color: rgba(255, 255, 255, 0.18);
 }
 
@@ -159,6 +160,16 @@ video.nf-player::cue {
   aspect-ratio: 16 / 9;
   background-size: cover;
   background-position: center;
+  overflow: hidden;
+}
+
+.trailer-preview-video {
+  transition: opacity 320ms ease, transform 420ms ease;
+  transform: scale(1.025);
+}
+
+.nf-card:hover .trailer-preview-video {
+  transform: scale(1.0);
 }
 
 .nf-card-overlay-play {
@@ -168,7 +179,7 @@ video.nf-player::cue {
   align-items: center;
   justify-content: center;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 240ms ease;
   background: linear-gradient(to top, rgba(0,0,0,0.58), rgba(0,0,0,0.12));
 }
 

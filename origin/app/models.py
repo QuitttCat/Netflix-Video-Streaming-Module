@@ -140,3 +140,17 @@ class BufferEvent(Base):
     download_speed_kbps = Column(Integer)
     buffer_zone         = Column(String(16))
     timestamp           = Column(DateTime, default=datetime.utcnow)
+
+
+class SeriesTrailer(Base):
+    __tablename__ = "series_trailers"
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    series_id          = Column(Integer, ForeignKey("series.id"), nullable=False)
+    title              = Column(String(255), nullable=True)
+    storage_path       = Column(String(1024), nullable=False)
+    content_type       = Column(String(128), default="video/mp4")
+    file_size_bytes    = Column(Integer, default=0)
+    is_active          = Column(Boolean, default=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at         = Column(DateTime, default=datetime.utcnow)
+    updated_at         = Column(DateTime, default=datetime.utcnow)
