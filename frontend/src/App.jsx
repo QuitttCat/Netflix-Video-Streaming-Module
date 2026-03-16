@@ -23,6 +23,7 @@ export default function App() {
   const [view,     setView]     = useState('home')   // 'home' | 'player' | 'admin' | 'content'
   const [session,  setSession]  = useState(null)
   const [selVideo, setSelVideo] = useState(null)
+  const [bootstrapping, setBootstrapping] = useState(true)
 
   const navigate = (nextView, { replace = false, videoId = null } = {}) => {
     setView(nextView)
@@ -34,22 +35,54 @@ export default function App() {
     }
   }
 
-  // Restore session from localStorage on first load
+  // Restore session from localStorage on first load and verify token
   useEffect(() => {
-    const stored = localStorage.getItem('auth')
-    if (stored) {
+    let alive = true
+
+    const bootstrapAuth = async () => {
+      const stored = localStorage.getItem('auth')
+      if (!stored) {
+        if (!alive) return
+        window.history.replaceState({ view: 'login' }, '', '/login')
+        setBootstrapping(false)
+        return
+      }
+
       try {
         const parsed = JSON.parse(stored)
-        const isAdmin = parsed.user.role === 'admin'
+        const verify = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${parsed.token}` },
+        })
+
+        if (!verify.ok) {
+          throw new Error('Session expired')
+        }
+
+        const me = await verify.json()
+        if (!alive) return
+
+        const nextAuth = { token: parsed.token, user: me }
+        const isAdmin = me.role === 'admin'
         const startView = resolveViewFromPath(window.location.pathname, isAdmin)
-        setAuth(parsed)
+        localStorage.setItem('auth', JSON.stringify(nextAuth))
+        setAuth(nextAuth)
         setView(startView)
         window.history.replaceState({ view: startView }, '', pathForView(startView))
       } catch {
+        if (!alive) return
         localStorage.removeItem('auth')
+        setAuth(null)
+        setView('home')
+        window.history.replaceState({ view: 'login' }, '', '/login')
+      } finally {
+        if (alive) setBootstrapping(false)
       }
-    } else {
-      window.history.replaceState({ view: 'home' }, '', '/home')
+    }
+
+    bootstrapAuth()
+
+    return () => {
+      alive = false
     }
   }, [])
 
@@ -80,7 +113,7 @@ export default function App() {
     setView('home')
     setSession(null)
     setSelVideo(null)
-    window.history.replaceState({ view: 'home' }, '', '/home')
+    window.history.replaceState({ view: 'login' }, '', '/login')
   }
 
   const handlePlayVideo = async (video) => {
@@ -164,6 +197,10 @@ export default function App() {
     } catch (e) {
       alert(e.message)
     }
+  }
+
+  if (bootstrapping) {
+    return <div style={{ padding: 40, color: '#aaa' }}>Checking session…</div>
   }
 
   // Not logged in → show login page
