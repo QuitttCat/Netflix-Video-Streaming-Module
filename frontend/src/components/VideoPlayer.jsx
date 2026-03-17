@@ -1,13 +1,33 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import dashjs from 'dashjs'
-import { FaCompress, FaExpand, FaPause, FaPlay, FaVolumeMute, FaVolumeUp } from 'react-icons/fa'
-import { MdOutlineForward10, MdOutlineReplay10 } from 'react-icons/md'
+import {
+  MdFullscreen,
+  MdFullscreenExit,
+  MdHighQuality,
+  MdOutlineForward10,
+  MdOutlineReplay10,
+  MdPause,
+  MdPlayArrow,
+  MdSkipNext,
+  MdSpeed,
+  MdSubtitles,
+  MdViewList,
+  MdVolumeOff,
+  MdVolumeUp,
+} from 'react-icons/md'
 import BufferBar from './BufferBar.jsx'
 
 const QUALITIES = ['360p', '480p', '720p', '1080p']
 const MAX_BUF = 60
 const RESERVOIR = 10
 const CUSHION_T = 45
+const RESOLUTION_PRESETS = [
+  { key: 'auto', label: 'Auto', targetHeight: null },
+  { key: 'hd', label: 'HD', targetHeight: 1080 },
+  { key: '1080p', label: '1080p', targetHeight: 1080 },
+  { key: '720p', label: '720p', targetHeight: 720 },
+  { key: '360p', label: '360p', targetHeight: 360 },
+]
 
 function bba(buf) {
   if (buf <= RESERVOIR) return { quality: '360p', zone: 'reservoir' }
@@ -85,10 +105,25 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const metadataAudioTracksRef = useRef([])
   const [controlsVisible, setControlsVisible] = useState(true)
   const idleTimerRef = useRef(null)
+  const [actionOverlay, setActionOverlay] = useState(null)
+  const actionOverlayTimerRef = useRef(null)
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false)
+  const [showEpisodePicker, setShowEpisodePicker] = useState(false)
+  const [episodePickerLoading, setEpisodePickerLoading] = useState(false)
+  const [episodePickerError, setEpisodePickerError] = useState('')
+  const [upcomingEpisodes, setUpcomingEpisodes] = useState([])
+  const [showResolutionMenu, setShowResolutionMenu] = useState(false)
+  const [resolutionPreset, setResolutionPreset] = useState('auto')
+  const [showAudioSubMenu, setShowAudioSubMenu] = useState(false)
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const popoverTimerRef = useRef(null)
 
   const currentVideoId =
     session?.video_metadata?.id ||
     video?.id
+  const currentEpisodeId = session?.video_metadata?.current_episode?.episode_id || video?.episode_id || null
+  const currentSeriesId = session?.video_metadata?.current_episode?.series_id || null
+  const currentEpisodeMeta = session?.video_metadata?.current_episode || null
   const nextEpisode = session?.video_metadata?.next_episode || null
   const trackMetadata = Array.isArray(session?.video_metadata?.tracks)
     ? session.video_metadata.tracks
@@ -130,6 +165,9 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     : prefetch?.next_video_id
       ? `Video ${prefetch.next_video_id}`
       : 'the next video'
+  const centerEpisodeLabel = currentEpisodeMeta?.series_title
+    ? `${currentEpisodeMeta.series_title}   S${currentEpisodeMeta.season_number} E${currentEpisodeMeta.episode_number}`
+    : video?.subtitle || ''
 
   // Initialize dash.js player with smaller buffer targets
   useEffect(() => {
@@ -235,6 +273,13 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     setAudioOptions([])
     setSelectedAudioIndex('')
     setSelectedSubtitleUrl('off')
+    setShowEpisodePicker(false)
+    setShowResolutionMenu(false)
+    setShowAudioSubMenu(false)
+    setShowSpeedMenu(false)
+    setActionOverlay(null)
+    setUpcomingEpisodes([])
+    setEpisodePickerError('')
     autoNextCancelledRef.current = false
   }, [session?.session_id])
 
@@ -336,6 +381,38 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     return () => document.removeEventListener('fullscreenchange', onFsChange)
   }, [])
 
+  const resetIdleTimer = useCallback(() => {
+    setControlsVisible(true)
+    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
+    idleTimerRef.current = window.setTimeout(() => {
+      if (!videoRef.current?.paused) setControlsVisible(false)
+    }, 3000)
+  }, [])
+
+  const showAction = useCallback((label, icon = null) => {
+    setActionOverlay({ label, icon })
+    if (actionOverlayTimerRef.current) window.clearTimeout(actionOverlayTimerRef.current)
+    actionOverlayTimerRef.current = window.setTimeout(() => {
+      setActionOverlay(null)
+    }, 900)
+  }, [])
+
+  const adjustVolumeBy = useCallback((delta) => {
+    const current = muted ? 0 : volume
+    const next = Math.max(0, Math.min(1, Math.round((current + delta) * 100) / 100))
+    setVolume(next)
+    setMuted(next === 0)
+    showAction(`Volume ${Math.round(next * 100)}%`, next === 0 ? '🔇' : '🔊')
+  }, [muted, volume, showAction])
+
+  useEffect(() => {
+    return () => {
+      if (actionOverlayTimerRef.current) window.clearTimeout(actionOverlayTimerRef.current)
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
+      if (popoverTimerRef.current) window.clearTimeout(popoverTimerRef.current)
+    }
+  }, [])
+
   useEffect(() => {
     const onKeyDown = (e) => {
       const tag = (e.target?.tagName || '').toLowerCase()
@@ -344,25 +421,37 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
       if (e.key === ' ' || e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        handlePlayPause()
+        handlePlayPause({ showOverlay: true })
       } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') {
         e.preventDefault()
-        seekBy(10)
+        seekBy(10, { showOverlay: true })
       } else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
         e.preventDefault()
-        seekBy(-10)
+        seekBy(-10, { showOverlay: true })
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        adjustVolumeBy(0.05)
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        adjustVolumeBy(-0.05)
       } else if (e.key.toLowerCase() === 'm') {
         e.preventDefault()
-        setMuted(v => !v)
+        setMuted(v => {
+          const next = !v
+          showAction(next ? 'Muted' : 'Unmuted', next ? '🔇' : '🔊')
+          return next
+        })
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault()
         toggleFullscreen()
       }
+
+      resetIdleTimer()
     }
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [playing])
+  }, [adjustVolumeBy, resetIdleTimer, playing])
 
   // Simulate buffer dynamics based on network preset
   // Real dash.js buffer fills too fast on localhost, so we simulate
@@ -533,23 +622,29 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     return () => clearInterval(t)
   }, [prefetchPolling, session?.session_id, currentVideoId])
 
-  const handlePlayPause = () => {
+  const handlePlayPause = ({ showOverlay: show = false } = {}) => {
     if (!videoRef.current) return
     if (videoRef.current.paused) {
       videoRef.current.play().then(() => {
         setAutoplayBlocked(false)
         if (simBuf === 0) setSimBuf(2)
+        if (show) showAction('Play', '▶')
       }).catch(() => setAutoplayBlocked(true))
     } else {
       videoRef.current.pause()
+      if (show) showAction('Pause', '⏸')
     }
   }
 
-  const seekBy = (seconds) => {
+  const seekBy = (seconds, { showOverlay: show = false } = {}) => {
     if (!videoRef.current) return
     const next = Math.max(0, Math.min(duration, (videoRef.current.currentTime || 0) + seconds))
     videoRef.current.currentTime = next
     setPlayhead(next)
+    if (show) {
+      const abs = Math.abs(seconds)
+      showAction(seconds > 0 ? `+${abs}s` : `-${abs}s`, seconds > 0 ? '⏩' : '⏪')
+    }
   }
 
   const seekToPercent = (evt) => {
@@ -576,6 +671,132 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const handlePlayNextEpisode = async () => {
     if (!canPlayNextEpisode || !onPlayNextEpisode) return
     await onPlayNextEpisode(nextEpisode || session.video_metadata.next_episode_id)
+  }
+
+  const loadUpcomingEpisodes = useCallback(async () => {
+    if (!currentSeriesId || !currentEpisodeId || !token) {
+      setEpisodePickerError('Episode list is unavailable for this title.')
+      setUpcomingEpisodes([])
+      return
+    }
+
+    setEpisodePickerLoading(true)
+    setEpisodePickerError('')
+    try {
+      const r = await fetch(`/api/catalog/series/${currentSeriesId}/episodes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const payload = await r.json()
+      if (!r.ok) throw new Error(payload.detail || 'Failed to load episodes')
+      const all = Array.isArray(payload.episodes) ? payload.episodes : []
+      const ordered = [...all].sort((a, b) => {
+        const seasonDiff = Number(a.season_number || 0) - Number(b.season_number || 0)
+        if (seasonDiff !== 0) return seasonDiff
+        return Number(a.episode_number || 0) - Number(b.episode_number || 0)
+      })
+      setUpcomingEpisodes(ordered)
+      if (ordered.length === 0) setEpisodePickerError('No episodes available.')
+    } catch (e) {
+      setEpisodePickerError(e.message)
+      setUpcomingEpisodes([])
+    } finally {
+      setEpisodePickerLoading(false)
+    }
+  }, [currentSeriesId, currentEpisodeId, token, session?.video_metadata?.current_episode?.season_number, session?.video_metadata?.current_episode?.episode_number])
+
+  const openEpisodePicker = async () => {
+    clearPopoverTimer()
+    setShowEpisodePicker(true)
+    setShowResolutionMenu(false)
+    setShowAudioSubMenu(false)
+    setShowSpeedMenu(false)
+    await loadUpcomingEpisodes()
+  }
+
+  const clearPopoverTimer = () => {
+    if (popoverTimerRef.current) window.clearTimeout(popoverTimerRef.current)
+  }
+
+  const startPopoverTimer = (closeFn) => {
+    clearPopoverTimer()
+    popoverTimerRef.current = window.setTimeout(closeFn, 2000)
+  }
+
+  const containScrollWheel = useCallback((event) => {
+    event.stopPropagation()
+    const element = event.currentTarget
+    const canScroll = element.scrollHeight > element.clientHeight + 1
+
+    if (!canScroll) {
+      event.preventDefault()
+      return
+    }
+
+    const goingDown = event.deltaY > 0
+    const atTop = element.scrollTop <= 0
+    const atBottom = Math.ceil(element.scrollTop + element.clientHeight) >= element.scrollHeight
+
+    if ((atTop && !goingDown) || (atBottom && goingDown)) {
+      event.preventDefault()
+    }
+  }, [])
+
+  const openResolutionMenu = () => {
+    clearPopoverTimer()
+    setShowResolutionMenu(true)
+    setShowEpisodePicker(false)
+    setShowAudioSubMenu(false)
+    setShowSpeedMenu(false)
+  }
+
+  const openAudioSubMenu = () => {
+    clearPopoverTimer()
+    setShowAudioSubMenu(true)
+    setShowResolutionMenu(false)
+    setShowEpisodePicker(false)
+    setShowSpeedMenu(false)
+  }
+
+  const openSpeedMenu = () => {
+    clearPopoverTimer()
+    setShowSpeedMenu(true)
+    setShowResolutionMenu(false)
+    setShowAudioSubMenu(false)
+    setShowEpisodePicker(false)
+  }
+
+  const applyResolutionPreset = (presetKey) => {
+    setResolutionPreset(presetKey)
+    const player = playerRef.current
+    if (!player?.getBitrateInfoListFor || !player.setQualityFor) return
+
+    const list = player.getBitrateInfoListFor('video') || []
+    if (!list.length) return
+
+    if (presetKey === 'auto') {
+      player.updateSettings?.({ streaming: { abr: { autoSwitchBitrate: { video: true, audio: true } } } })
+      showAction('Auto Quality', 'HD')
+      return
+    }
+
+    const selected = RESOLUTION_PRESETS.find(item => item.key === presetKey)
+    const target = selected?.targetHeight
+    if (!target) return
+
+    player.updateSettings?.({ streaming: { abr: { autoSwitchBitrate: { video: false, audio: true } } } })
+    let bestIndex = 0
+    let bestDelta = Number.POSITIVE_INFINITY
+    list.forEach((bitrate, index) => {
+      const h = Number(bitrate.height || 0)
+      if (!h) return
+      const delta = Math.abs(h - target)
+      if (delta < bestDelta) {
+        bestDelta = delta
+        bestIndex = index
+      }
+    })
+    player.setQualityFor('video', bestIndex, true)
+    showAction(selected?.label || 'Quality Changed', 'HD')
   }
 
   const handleAudioTrackChange = (event) => {
@@ -627,14 +848,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     setAutoNextCountdown(null)
   }
 
-  const resetIdleTimer = useCallback(() => {
-    setControlsVisible(true)
-    if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
-    idleTimerRef.current = window.setTimeout(() => {
-      if (!videoRef.current?.paused) setControlsVisible(false)
-    }, 3000)
-  }, [])
-
   // Always show controls while paused
   useEffect(() => {
     if (!playing) {
@@ -642,6 +855,17 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
       if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current)
     }
   }, [playing])
+
+  // Dismiss all overlays/popovers when controls fade out
+  useEffect(() => {
+    if (!controlsVisible) {
+      setActionOverlay(null)
+      setShowResolutionMenu(false)
+      setShowAudioSubMenu(false)
+      setShowSpeedMenu(false)
+      setShowEpisodePicker(false)
+    }
+  }, [controlsVisible])
 
   const zoneColor = { reservoir: '#e50914', cushion: '#f5a623', upper_reservoir: '#46d369' }
 
@@ -742,8 +966,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
             <div style={{
               position: 'absolute', left: 12, right: 12, bottom: 12,
-              background: 'linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0.1))',
-              borderRadius: 8, padding: 10,
+              background: 'none',
+              borderRadius: 0, padding: '10px 6px 4px',
               opacity: controlsVisible ? 1 : 0,
               transition: 'opacity 0.3s ease',
               pointerEvents: controlsVisible ? 'auto' : 'none',
@@ -755,76 +979,421 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
                 <div style={{ height: '100%', width: `${(playhead / duration) * 100}%`, borderRadius: 99, background: '#e50914' }} />
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff' }}>
-                <CtlBtn onClick={handlePlayPause} ariaLabel={playing ? 'Pause' : 'Play'}>
-                  {playing ? <FaPause size={13} /> : <FaPlay size={13} style={{ marginLeft: 2 }} />}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#fff', position: 'relative' }}>
+                <CtlBtn
+                  onClick={() => handlePlayPause({ showOverlay: true })}
+                  ariaLabel={playing ? 'Pause' : 'Play'}
+                  tooltip={playing ? 'Space / K · Pause' : 'Space / K · Play'}
+                >
+                  {playing ? <MdPause size={26} /> : <MdPlayArrow size={28} style={{ marginLeft: 2 }} />}
                 </CtlBtn>
-                <CtlBtn onClick={() => seekBy(-10)} ariaLabel="Back 10 seconds">
-                  <MdOutlineReplay10 size={25} color="#fff" />
+                <CtlBtn
+                  onClick={() => seekBy(-10, { showOverlay: true })}
+                  ariaLabel="Back 10 seconds"
+                  tooltip="← / J · Back 10s"
+                >
+                  <MdOutlineReplay10 size={28} color="#fff" />
                 </CtlBtn>
-                <CtlBtn onClick={() => seekBy(10)} ariaLabel="Forward 10 seconds">
-                  <MdOutlineForward10 size={25} color="#fff" />
+                <CtlBtn
+                  onClick={() => seekBy(10, { showOverlay: true })}
+                  ariaLabel="Forward 10 seconds"
+                  tooltip="→ / L · Forward 10s"
+                >
+                  <MdOutlineForward10 size={28} color="#fff" />
                 </CtlBtn>
-                <CtlBtn onClick={() => setMuted(v => !v)} ariaLabel={muted || volume === 0 ? 'Unmute' : 'Mute'}>
-                  {muted || volume === 0 ? <FaVolumeMute size={13} /> : <FaVolumeUp size={13} />}
-                </CtlBtn>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={muted ? 0 : volume}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    setVolume(v)
-                    if (muted && v > 0) setMuted(false)
-                  }}
-                  style={{ width: 90 }}
-                />
 
-                <span style={{ marginLeft: 6, fontSize: 12, color: '#d0d0d0' }}>{fmtTime(playhead)} / {fmtTime(duration)}</span>
+                <div
+                  style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
+                  onMouseEnter={() => setShowVolumeSlider(true)}
+                  onMouseLeave={() => setShowVolumeSlider(false)}
+                >
+                  <CtlBtn
+                    onClick={() => {
+                      setMuted(v => {
+                        const next = !v
+                        showAction(next ? 'Muted' : 'Unmuted', next ? '🔇' : '🔊')
+                        return next
+                      })
+                    }}
+                    ariaLabel={muted || volume === 0 ? 'Unmute' : 'Mute'}
+                    tooltip="M · Mute / Unmute"
+                  >
+                    {muted || volume === 0 ? <MdVolumeOff size={26} /> : <MdVolumeUp size={26} />}
+                  </CtlBtn>
 
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <select
-                    value={selectedAudioIndex}
-                    onChange={handleAudioTrackChange}
-                    disabled={audioOptions.length === 0}
-                    title="Audio track"
-                    style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12, maxWidth: 140 }}
+                  {showVolumeSlider && (
+                    <div style={{
+                      position: 'absolute',
+                      left: '50%',
+                      bottom: 48,
+                      transform: 'translateX(-50%)',
+                      width: 42,
+                      height: 130,
+                      borderRadius: 14,
+                      background: 'rgba(17,17,17,0.98)',
+                      border: '1px solid rgba(255,255,255,0.28)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '8px 0',
+                    }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={muted ? 0 : volume}
+                        onChange={(e) => {
+                          const v = Number(e.target.value)
+                          setVolume(v)
+                          setMuted(v === 0)
+                          showAction(`Volume ${Math.round(v * 100)}%`, v === 0 ? '🔇' : '🔊')
+                        }}
+                        style={{ width: 95, transform: 'rotate(-90deg)' }}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <span style={{ marginLeft: 4, fontSize: 12, color: '#d0d0d0', whiteSpace: 'nowrap' }}>{fmtTime(playhead)} / {fmtTime(duration)}</span>
+
+                {centerEpisodeLabel && (
+                  <span style={{
+                    position: 'absolute',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    color: 'rgba(255,255,255,0.88)',
+                    fontSize: 11,
+                    fontWeight: 500,
+                    letterSpacing: 0.3,
+                    textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {centerEpisodeLabel}
+                  </span>
+                )}
+
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center', position: 'relative' }}>
+                  <CtlBtn
+                    onClick={handlePlayNextEpisode}
+                    ariaLabel="Play next episode"
+                    disabled={!canPlayNextEpisode}
+                    tooltip="Shift + N · Next episode"
                   >
-                    {audioOptions.length === 0 && (
-                      <option value="">Audio</option>
-                    )}
-                    {audioOptions.map(track => (
-                      <option key={track.index} value={track.index}>{track.label}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={selectedSubtitleUrl}
-                    onChange={handleSubtitleTrackChange}
-                    title="Subtitle track"
-                    style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12, maxWidth: 140 }}
+                    <MdSkipNext size={28} />
+                  </CtlBtn>
+
+                  <CtlBtn
+                    onClick={openEpisodePicker}
+                    ariaLabel="Open episode list"
+                    onMouseEnter={openEpisodePicker}
+                    onMouseLeave={() => startPopoverTimer(() => setShowEpisodePicker(false))}
                   >
-                    <option value="off">Subtitles Off</option>
-                    {subtitleTracks.map(track => (
-                      <option key={track.source_url} value={track.source_url}>{trackLabel(track)}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={playbackRate}
-                    onChange={(e) => setPlaybackRate(Number(e.target.value))}
-                    style={{ background: '#1a1a1a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: '4px 6px', fontSize: 12 }}
+                    <MdViewList size={26} />
+                  </CtlBtn>
+
+                  <CtlBtn
+                    onClick={() => {
+                      if (showResolutionMenu) {
+                        setShowResolutionMenu(false)
+                        return
+                      }
+                      openResolutionMenu()
+                    }}
+                    ariaLabel="Resolution"
+                    onMouseEnter={openResolutionMenu}
+                    onMouseLeave={() => startPopoverTimer(() => setShowResolutionMenu(false))}
                   >
-                    {[0.5, 0.75, 1, 1.25, 1.5, 2].map(r => (
-                      <option key={r} value={r}>{r}x</option>
-                    ))}
-                  </select>
-                  <CtlBtn onClick={toggleFullscreen} ariaLabel={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}>
-                    {isFullscreen ? <FaCompress size={12} /> : <FaExpand size={12} />}
+                    <MdHighQuality size={26} />
+                  </CtlBtn>
+
+                  <CtlBtn
+                    onClick={() => {
+                      if (showAudioSubMenu) {
+                        setShowAudioSubMenu(false)
+                        return
+                      }
+                      openAudioSubMenu()
+                    }}
+                    ariaLabel="Audio & Subtitles"
+                    onMouseEnter={openAudioSubMenu}
+                    onMouseLeave={() => startPopoverTimer(() => setShowAudioSubMenu(false))}
+                  >
+                    <MdSubtitles size={26} />
+                  </CtlBtn>
+
+                  <CtlBtn
+                    onClick={() => {
+                      if (showSpeedMenu) {
+                        setShowSpeedMenu(false)
+                        return
+                      }
+                      openSpeedMenu()
+                    }}
+                    ariaLabel="Playback speed"
+                    onMouseEnter={openSpeedMenu}
+                    onMouseLeave={() => startPopoverTimer(() => setShowSpeedMenu(false))}
+                  >
+                    <MdSpeed size={26} />
+                  </CtlBtn>
+
+                  <CtlBtn
+                    onClick={toggleFullscreen}
+                    ariaLabel={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                    tooltip={isFullscreen ? 'F · Exit fullscreen' : 'F · Fullscreen'}
+                  >
+                    {isFullscreen ? <MdFullscreenExit size={26} /> : <MdFullscreen size={26} />}
                   </CtlBtn>
                 </div>
               </div>
             </div>
+
+            {actionOverlay && (
+              <div style={{
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                zIndex: 5,
+                background: 'rgba(16,16,16,0.9)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: 14,
+                minWidth: 130,
+                textAlign: 'center',
+                padding: '12px 16px',
+                color: '#fff',
+                fontWeight: 700,
+              }}>
+                <div style={{ fontSize: 20, marginBottom: 2 }}>{actionOverlay.icon || '•'}</div>
+                <div style={{ fontSize: 14 }}>{actionOverlay.label}</div>
+              </div>
+            )}
+
+            {showResolutionMenu && (
+              <div
+                style={popoverStyle(12, 112)}
+                onMouseEnter={clearPopoverTimer}
+                onMouseLeave={() => startPopoverTimer(() => setShowResolutionMenu(false))}
+              >
+                <div style={popoverTitleStyle}>Quality</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {RESOLUTION_PRESETS.map(item => (
+                    <button
+                      key={item.key}
+                      onClick={() => {
+                        applyResolutionPreset(item.key)
+                        setShowResolutionMenu(false)
+                      }}
+                      style={chipStyle(resolutionPreset === item.key)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {showSpeedMenu && (
+              <div
+                style={{
+                  position: 'absolute',
+                  right: 70,
+                  bottom: 96,
+                  width: 'min(680px, 82vw)',
+                  background: 'rgba(33,33,33,0.97)',
+                  borderRadius: 10,
+                  padding: '20px 28px 24px',
+                  zIndex: 6,
+                }}
+                onMouseEnter={clearPopoverTimer}
+                onMouseLeave={() => startPopoverTimer(() => setShowSpeedMenu(false))}
+              >
+                <div style={{ color: '#fff', fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Playback Speed</div>
+                <div style={{ position: 'relative', paddingTop: 4 }}>
+                  <div style={{ position: 'absolute', top: 10, left: 0, right: 0, height: 2, background: 'rgba(255,255,255,0.28)' }} />
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, position: 'relative' }}>
+                    {[0.5, 0.75, 1, 1.25, 1.5, 2].map(rate => (
+                      <button
+                        key={rate}
+                        onClick={() => {
+                          setPlaybackRate(rate)
+                          setShowSpeedMenu(false)
+                          showAction(`${rate}x`, '⏩')
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: 14,
+                          padding: 0,
+                        }}
+                      >
+                        <span style={{
+                          width: rate === playbackRate ? 24 : 14,
+                          height: rate === playbackRate ? 24 : 14,
+                          borderRadius: '50%',
+                          background: rate === playbackRate ? '#fff' : '#d0d0d0',
+                          boxShadow: rate === playbackRate ? '0 0 0 5px rgba(255,255,255,0.32)' : 'none',
+                          display: 'inline-block',
+                        }} />
+                        <span style={{ fontSize: rate === playbackRate ? 13 : 12, fontWeight: rate === playbackRate ? 700 : 500 }}>
+                          {rate === 1 ? '1x (Normal)' : `${rate}x`}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {showAudioSubMenu && (
+              <div
+                style={{
+                  position: 'absolute',
+                  right: 12,
+                  bottom: 96,
+                  width: 'min(560px, 80vw)',
+                  maxHeight: '72%',
+                  background: 'rgba(20,20,20,0.97)',
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  borderRadius: 10,
+                  zIndex: 6,
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+                onMouseEnter={clearPopoverTimer}
+                onMouseLeave={() => startPopoverTimer(() => setShowAudioSubMenu(false))}
+              >
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', flex: 1, minHeight: 0 }}>
+                  {/* Audio column */}
+                  <div style={{ padding: '20px 20px 20px 24px', borderRight: '1px solid rgba(255,255,255,0.12)', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ color: '#fff', fontSize: 15, fontWeight: 700, marginBottom: 14 }}>Audio</div>
+                    <div
+                      style={{ display: 'grid', gap: 2, overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: 8, overscrollBehavior: 'contain', scrollbarGutter: 'stable' }}
+                      onWheel={containScrollWheel}
+                    >
+                      {audioOptions.length === 0 && <div style={{ color: '#888', fontSize: 12 }}>No audio tracks</div>}
+                      {audioOptions.map(track => (
+                        <button
+                          key={track.index}
+                          onClick={() => {
+                            handleAudioTrackChange({ target: { value: track.index } })
+                          }}
+                          style={audioSubListBtnStyle(selectedAudioIndex === track.index)}
+                        >
+                          {selectedAudioIndex === track.index && <span style={{ marginRight: 8, color: '#fff' }}>✓</span>}
+                          {track.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Subtitles column */}
+                  <div style={{ padding: '20px 24px 20px 20px', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ color: '#fff', fontSize: 15, fontWeight: 700, marginBottom: 14 }}>Subtitles</div>
+                    <div
+                      style={{ display: 'grid', gap: 2, overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: 4, overscrollBehavior: 'contain', scrollbarGutter: 'stable' }}
+                      onWheel={containScrollWheel}
+                    >
+                      <button
+                        onClick={() => handleSubtitleTrackChange({ target: { value: 'off' } })}
+                        style={audioSubListBtnStyle(selectedSubtitleUrl === 'off')}
+                      >
+                        {selectedSubtitleUrl === 'off' && <span style={{ marginRight: 8, color: '#fff' }}>✓</span>}
+                        Off
+                      </button>
+                      {subtitleTracks.map(track => (
+                        <button
+                          key={track.source_url}
+                          onClick={() => handleSubtitleTrackChange({ target: { value: track.source_url } })}
+                          style={audioSubListBtnStyle(selectedSubtitleUrl === track.source_url)}
+                        >
+                          {selectedSubtitleUrl === track.source_url && <span style={{ marginRight: 8, color: '#fff' }}>✓</span>}
+                          {trackLabel(track)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {showEpisodePicker && (
+              <div
+                style={{
+                  position: 'absolute',
+                  right: 16,
+                  bottom: 84,
+                  width: 'min(520px, 74vw)',
+                  maxHeight: '70%',
+                  background: 'rgba(18,18,18,0.97)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: 10,
+                  zIndex: 6,
+                  padding: '12px 14px',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+                onMouseEnter={clearPopoverTimer}
+                onMouseLeave={() => startPopoverTimer(() => setShowEpisodePicker(false))}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ color: '#fff', fontWeight: 700 }}>Episodes</div>
+                  <button
+                    onClick={() => setShowEpisodePicker(false)}
+                    style={{ background: 'none', border: 'none', color: '#bbb', cursor: 'pointer', fontSize: 18 }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div
+                  style={{ overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1, paddingRight: 4, scrollbarGutter: 'stable' }}
+                  onWheel={containScrollWheel}
+                >
+                  {episodePickerLoading && <div style={{ color: '#aaa', fontSize: 13 }}>Loading episodes...</div>}
+                  {!episodePickerLoading && episodePickerError && (
+                    <div style={{ color: '#ff9b9b', fontSize: 13 }}>{episodePickerError}</div>
+                  )}
+                  {!episodePickerLoading && !episodePickerError && upcomingEpisodes.map(ep => {
+                    const isCurrent = Number(ep.episode_id) === Number(currentEpisodeId)
+                    return (
+                    <button
+                      key={ep.episode_id}
+                      onClick={async () => {
+                        if (isCurrent || !ep.playable || !ep.video_id) return
+                        setShowEpisodePicker(false)
+                        await onPlayNextEpisode?.(ep)
+                      }}
+                      disabled={isCurrent || !ep.playable || !ep.video_id}
+                      style={{
+                        width: '100%',
+                        marginBottom: 8,
+                        textAlign: 'left',
+                        padding: '10px 12px',
+                        borderRadius: 6,
+                        border: isCurrent ? '1px solid rgba(229,9,20,0.75)' : '1px solid rgba(255,255,255,0.18)',
+                        background: isCurrent ? 'rgba(229,9,20,0.16)' : (ep.playable && ep.video_id ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.02)'),
+                        color: isCurrent || (ep.playable && ep.video_id) ? '#fff' : '#888',
+                        cursor: isCurrent ? 'default' : (ep.playable && ep.video_id ? 'pointer' : 'not-allowed'),
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>
+                        S{ep.season_number}:E{ep.episode_number} • {ep.title}
+                        {isCurrent && <span style={{ marginLeft: 8, color: '#ffb3b7', fontSize: 11 }}>Now Playing</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#b9b9b9', marginTop: 2 }}>{ep.synopsis || 'No synopsis available.'}</div>
+                    </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ marginTop: 12, padding: '8px 2px 2px' }}>
@@ -978,29 +1547,134 @@ function Panel({ title, children }) {
   )
 }
 
-function CtlBtn({ children, onClick, ariaLabel }) {
+function CtlBtn({ children, onClick, ariaLabel, disabled = false, tooltip = '', onMouseEnter, onMouseLeave }) {
+  const [hovered, setHovered] = useState(false)
+
   return (
-    <button
-      onClick={onClick}
-      aria-label={ariaLabel}
-      style={{
-        background: 'rgba(0,0,0,0.55)',
-        color: '#fff',
-        border: '1px solid rgba(255,255,255,0.3)',
-        borderRadius: 999,
-        width: 36,
-        height: 36,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        cursor: 'pointer',
-        fontSize: 12,
-        backdropFilter: 'blur(2px)',
+    <div
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={(event) => {
+        setHovered(true)
+        onMouseEnter?.(event)
+      }}
+      onMouseLeave={(event) => {
+        setHovered(false)
+        onMouseLeave?.(event)
       }}
     >
-      {children}
-    </button>
+      <button
+        onClick={onClick}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        style={{
+          background: 'transparent',
+          color: disabled ? '#888' : '#fff',
+          border: 'none',
+          borderRadius: 999,
+          width: 44,
+          height: 44,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          fontSize: 12,
+          opacity: disabled ? 0.65 : 1,
+          padding: 0,
+          filter: 'drop-shadow(0 1px 4px rgba(0,0,0,0.7))',
+        }}
+      >
+        {children}
+      </button>
+
+      {tooltip && hovered && !disabled && (
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          bottom: 'calc(100% + 8px)',
+          transform: 'translateX(-50%)',
+          background: 'rgba(15,15,15,0.96)',
+          color: '#fff',
+          borderRadius: 6,
+          padding: '6px 8px',
+          fontSize: 11,
+          fontWeight: 500,
+          whiteSpace: 'nowrap',
+          border: '1px solid rgba(255,255,255,0.14)',
+          boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
+          pointerEvents: 'none',
+          zIndex: 8,
+        }}>
+          {tooltip}
+        </div>
+      )}
+    </div>
   )
+}
+
+function popoverStyle(right, bottom) {
+  return {
+    position: 'absolute',
+    right,
+    bottom,
+    background: 'rgba(18,18,18,0.96)',
+    border: '1px solid rgba(255,255,255,0.28)',
+    borderRadius: 10,
+    padding: 10,
+    minWidth: 220,
+    zIndex: 6,
+  }
+}
+
+const popoverTitleStyle = {
+  color: '#fff',
+  fontSize: 12,
+  fontWeight: 700,
+  marginBottom: 8,
+  letterSpacing: 0.4,
+}
+
+function chipStyle(active) {
+  return {
+    background: active ? '#e50914' : '#111',
+    color: '#fff',
+    border: active ? '1px solid #ff5861' : '1px solid rgba(255,255,255,0.35)',
+    borderRadius: 7,
+    padding: '5px 10px',
+    fontSize: 12,
+    cursor: 'pointer',
+  }
+}
+
+function listBtnStyle(active) {
+  return {
+    textAlign: 'left',
+    background: active ? 'rgba(229,9,20,0.2)' : 'rgba(255,255,255,0.04)',
+    color: '#fff',
+    border: active ? '1px solid rgba(229,9,20,0.7)' : '1px solid rgba(255,255,255,0.2)',
+    borderRadius: 6,
+    padding: '8px 10px',
+    fontSize: 12,
+    cursor: 'pointer',
+  }
+}
+
+function audioSubListBtnStyle(active) {
+  return {
+    textAlign: 'left',
+    background: 'none',
+    color: active ? '#fff' : '#ccc',
+    border: 'none',
+    borderRadius: 4,
+    padding: '8px 4px',
+    fontSize: 14,
+    cursor: 'pointer',
+    fontWeight: active ? 700 : 400,
+    display: 'flex',
+    alignItems: 'flex-start',
+    lineHeight: 1.35,
+    whiteSpace: 'normal',
+    wordBreak: 'break-word',
+  }
 }
 
 function Row({ label, value }) {

@@ -12,7 +12,7 @@ import redis.asyncio as aioredis
 
 from ..auth import get_current_user
 from ..database import get_db
-from ..models import Video, CDNNode, Episode, Season, Session, User, VideoProgress, MediaTrack
+from ..models import Video, CDNNode, Episode, Season, Series, Session, User, VideoProgress, MediaTrack
 
 router = APIRouter()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -82,10 +82,13 @@ async def _load_episode_tracks(db: AsyncSession, video_id: int) -> tuple[int | N
     return episode_id, payload
 
 
-def _serialize_episode(episode: Episode, season: Season) -> dict:
+def _serialize_episode(episode: Episode, season: Season, series: Series | None = None) -> dict:
     return {
         "episode_id": episode.id,
         "video_id": episode.video_id,
+        "series_id": episode.series_id,
+        "season_id": episode.season_id,
+        "series_title": series.title if series else None,
         "episode_number": episode.episode_number,
         "season_number": season.season_number,
         "title": episode.title,
@@ -95,8 +98,9 @@ def _serialize_episode(episode: Episode, season: Season) -> dict:
 
 async def _load_episode_navigation(db: AsyncSession, video_id: int) -> tuple[dict | None, dict | None]:
     current_result = await db.execute(
-        select(Episode, Season)
+        select(Episode, Season, Series)
         .join(Season, Season.id == Episode.season_id)
+        .join(Series, Series.id == Episode.series_id)
         .where(Episode.video_id == video_id)
         .order_by(Season.season_number.asc(), Episode.episode_number.asc())
     )
@@ -104,11 +108,12 @@ async def _load_episode_navigation(db: AsyncSession, video_id: int) -> tuple[dic
     if not current_row:
         return None, None
 
-    current_episode, current_season = current_row
+    current_episode, current_season, current_series = current_row
 
     next_result = await db.execute(
-        select(Episode, Season)
+        select(Episode, Season, Series)
         .join(Season, Season.id == Episode.season_id)
+        .join(Series, Series.id == Episode.series_id)
         .where(
             and_(
                 Episode.series_id == current_episode.series_id,
@@ -128,8 +133,8 @@ async def _load_episode_navigation(db: AsyncSession, video_id: int) -> tuple[dic
     )
     next_row = next_result.first()
     return (
-        _serialize_episode(current_episode, current_season),
-        _serialize_episode(next_row[0], next_row[1]) if next_row else None,
+        _serialize_episode(current_episode, current_season, current_series),
+        _serialize_episode(next_row[0], next_row[1], next_row[2]) if next_row else None,
     )
 
 
