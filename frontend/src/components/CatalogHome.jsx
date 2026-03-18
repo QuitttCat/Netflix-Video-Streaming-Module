@@ -433,7 +433,7 @@ async function fetchTrailerBlob(url) {
 async function resolveTrailerCdnUrl(seriesId, trailer) {
   if (!seriesId || !trailer?.cdn_path) return null
   try {
-    const r = await fetch(`/api/cdn/best-node?videoId=1&clientRegion=dhaka`)
+    const r = await fetch(`/api/cdn/best-node?videoId=${seriesId}&clientRegion=dhaka`)
     const payload = await r.json()
     if (!r.ok || !payload?.url) return null
     const base = normalizeHostUrl(payload.url).replace(/\/$/, '')
