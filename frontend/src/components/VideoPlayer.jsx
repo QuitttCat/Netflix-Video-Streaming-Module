@@ -116,6 +116,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const [resolutionPreset, setResolutionPreset] = useState('auto')
   const [showAudioSubMenu, setShowAudioSubMenu] = useState(false)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const [activeCdn, setActiveCdn] = useState(null) // current CDN node info
+  const [cdnSwitchMsg, setCdnSwitchMsg] = useState(null)
   const popoverTimerRef = useRef(null)
 
   const currentVideoId =
@@ -263,6 +265,85 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   useEffect(() => {
     resumeAppliedRef.current = false
   }, [session?.session_id])
+
+  // Initialize active CDN from session
+  useEffect(() => {
+    if (session?.cdn_node) setActiveCdn(session.cdn_node)
+  }, [session?.session_id])
+
+  // CDN health check — every 15s, check if current node is still alive
+  // Only switch when current node is DEAD, not just because another is "better"
+  const activeCdnRef = useRef(null)
+  useEffect(() => { activeCdnRef.current = activeCdn }, [activeCdn])
+
+  useEffect(() => {
+    if (!playing || !session?.session_id || !currentVideoId) return
+    const check = async () => {
+      try {
+        const r = await fetch(`/api/cdn/stats`)
+        if (!r.ok) return
+        const stats = await r.json()
+        const nodes = Array.isArray(stats?.nodes) ? stats.nodes : []
+        const current = activeCdnRef.current
+        if (!current) return
+
+        const currentId = current.id || current.node_id
+        const currentNode = nodes.find(n => n.id === currentId)
+
+        // Current node is still alive and healthy — do nothing
+        if (currentNode && currentNode.status === 'active') {
+          // Check if heartbeat is recent (within 20s)
+          const lastHb = currentNode.last_heartbeat ? new Date(currentNode.last_heartbeat) : null
+          const age = lastHb ? (Date.now() - lastHb.getTime()) : Infinity
+          if (age < 20000) return // node is healthy, no switch
+        }
+
+        // Current node is dead/stale — find a replacement
+        const alive = nodes.filter(n => {
+          if (n.id === currentId) return false
+          if (n.status !== 'active') return false
+          const hb = n.last_heartbeat ? new Date(n.last_heartbeat) : null
+          return hb && (Date.now() - hb.getTime()) < 20000
+        })
+        if (alive.length === 0) return // no healthy alternatives
+
+        // Pick the one with lowest latency
+        const best = alive.reduce((a, b) => (a.latency_ms || 999) <= (b.latency_ms || 999) ? a : b)
+
+        // Switch to the replacement node
+        const player = playerRef.current
+        const currentTime = videoRef.current?.currentTime || 0
+        const wasPlaying = !videoRef.current?.paused
+        if (player) {
+          // Build browser-accessible URL from node URL
+          const rawUrl = best.url || ''
+          const parsed = rawUrl.match(/:(\d+)/)
+          const port = parsed ? parsed[1] : '3001'
+          const clientUrl = `http://localhost:${port}`
+          const oldUrl = session.manifest_url || ''
+          const pathMatch = oldUrl.match(/\/videos\/.*/)
+          if (pathMatch) {
+            const newManifest = `${clientUrl}${pathMatch[0]}`
+            const onReady = () => {
+              player.off(dashjs.MediaPlayer.events.STREAM_INITIALIZED, onReady)
+              if (videoRef.current) {
+                videoRef.current.currentTime = currentTime
+                if (wasPlaying) videoRef.current.play().catch(() => {})
+              }
+            }
+            player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, onReady)
+            player.attachSource(newManifest)
+          }
+        }
+        const prevName = current.name || currentId
+        setCdnSwitchMsg(`CDN failover: ${prevName} → ${best.name}`)
+        setTimeout(() => setCdnSwitchMsg(null), 5000)
+        setActiveCdn({ id: best.id, name: best.name, url: best.url })
+      } catch {}
+    }
+    const t = setInterval(check, 15000)
+    return () => clearInterval(t)
+  }, [playing, session?.session_id, currentVideoId, session?.manifest_url])
 
   useEffect(() => {
     prefetchTriggered.current = false
@@ -1213,6 +1294,16 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
               </div>
             )}
 
+            {cdnSwitchMsg && (
+              <div style={{
+                position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', zIndex: 10,
+                background: 'rgba(16,16,16,0.92)', border: '1px solid #46d369', borderRadius: 8,
+                padding: '8px 18px', fontSize: 12, color: '#46d369', whiteSpace: 'nowrap',
+              }}>
+                {cdnSwitchMsg}
+              </div>
+            )}
+
             {showResolutionMenu && (
               <div
                 style={popoverStyle(12, 112)}
@@ -1539,10 +1630,15 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           </Panel>
 
           <Panel title="CDN Node">
-            {session.cdn_node ? (
+            {activeCdn ? (
               <>
-                <Row label="Name" value={session.cdn_node.name} />
-                <Row label="Node ID" value={session.cdn_node.id} />
+                <Row label="Name" value={activeCdn.name} />
+                <Row label="Node ID" value={activeCdn.id || activeCdn.node_id} />
+                {cdnSwitchMsg && (
+                  <div style={{ fontSize: 10, color: '#46d369', marginTop: 4, animation: 'fadeIn 0.3s' }}>
+                    {cdnSwitchMsg}
+                  </div>
+                )}
               </>
             ) : (
               <div style={{ color: '#555', fontSize: 12 }}>Served from origin</div>

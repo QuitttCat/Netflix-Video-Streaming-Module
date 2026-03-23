@@ -1,11 +1,13 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 import redis.asyncio as aioredis
+
+from urllib.parse import urlparse
 
 from ..database import get_db
 from ..models import CDNNode
@@ -71,20 +73,37 @@ async def best_node(
     clientRegion: str = "dhaka",
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(CDNNode).where(CDNNode.status == "active"))
+    # Only consider nodes that are active AND have sent a heartbeat within the last 15s
+    stale_cutoff = datetime.utcnow() - timedelta(seconds=15)
+    result = await db.execute(
+        select(CDNNode).where(
+            CDNNode.status == "active",
+            CDNNode.last_heartbeat >= stale_cutoff,
+        )
+    )
     nodes = result.scalars().all()
     if not nodes:
         raise HTTPException(status_code=503, detail="No CDN nodes available")
 
     def score(n: CDNNode):
-        region_bonus = 0 if n.location.lower() == clientRegion.lower() else 100
-        return region_bonus + n.load_percent + n.latency_ms / 10
+        region_bonus = 0 if (n.location or "").lower() == (clientRegion or "").lower() else 100
+        return region_bonus + float(n.load_percent or 0) + float(n.latency_ms or 0) / 10
 
     best = min(nodes, key=score)
+
+    # Convert docker-internal URL to browser-accessible URL
+    raw_url = best.url or ""
+    parsed = urlparse(raw_url)
+    host = parsed.hostname or ""
+    if host in {"cdn-node-1", "cdn-node-2", "cdn-node-3", "origin"}:
+        host = "localhost"
+    client_url = f"{parsed.scheme}://{host}:{parsed.port}" if parsed.port else f"{parsed.scheme}://{host}"
+
     return {
         "node_id":      best.id,
         "name":         best.name,
-        "url":          best.url,
+        "url":          client_url,
+        "internal_url": best.url,
         "location":     best.location,
         "latency_ms":   best.latency_ms,
         "load_percent": best.load_percent,

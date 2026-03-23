@@ -34,6 +34,7 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
   const [trailerTitleBySeries, setTrailerTitleBySeries] = useState({})
   const [uploadingTrailerSeriesId, setUploadingTrailerSeriesId] = useState(null)
   const [cdnHistoryByNode, setCdnHistoryByNode] = useState({})
+  const [bufferChartData, setBufferChartData] = useState([])
   const wsRef = useRef(null)
   const uploadPollTimeoutsRef = useRef({})
 
@@ -84,7 +85,9 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
 
     ws.onopen    = () => setConnected(true)
     ws.onmessage = (e) => {
-      const payload = JSON.parse(e.data)
+      try {
+        var payload = JSON.parse(e.data)
+      } catch { return }
       setData(payload)
       const now = Date.now()
       const nodes = Array.isArray(payload?.cdn_nodes) ? payload.cdn_nodes : []
@@ -101,6 +104,20 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
         })
         return next
       })
+      // Accumulate buffer events for chart (keep last 60 data points)
+      const events = Array.isArray(payload?.recent_events) ? payload.recent_events : []
+      if (events.length > 0) {
+        setBufferChartData(prev => {
+          const merged = [...prev]
+          events.forEach(evt => {
+            const key = `${evt.session_id}-${evt.timestamp}`
+            if (!merged.some(m => m._key === key)) {
+              merged.push({ ...evt, _key: key, _ts: now })
+            }
+          })
+          return merged.slice(-60)
+        })
+      }
     }
     ws.onclose   = () => setConnected(false)
     ws.onerror   = () => setConnected(false)
@@ -830,7 +847,15 @@ export default function AdminDashboard({ token, mode = 'ops', onOpenContentManag
             )}
           </Section>
 
-          {/* Buffer events */}
+          {/* Buffer event chart + list */}
+          <Section title="Buffer Level Over Time">
+            {bufferChartData.length > 1 ? (
+              <BufferChart data={bufferChartData} />
+            ) : (
+              <Empty msg="Waiting for buffer events to plot..." />
+            )}
+          </Section>
+
           <Section title="Recent Buffer Events">
             {data?.recent_events?.length > 0 ? (
               <div className="admin-panel" style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: 8 }}>
@@ -1266,6 +1291,86 @@ function CDNCard({ node }) {
         <div>Load:    <LoadBar value={node.load_percent} /></div>
         <div>Cache Hit: <span style={{ color: '#46d369' }}>{node.cache_hit_ratio}%</span></div>
       </div>
+    </div>
+  )
+}
+
+function BufferChart({ data }) {
+  const W = 600, H = 180, PAD = { top: 20, right: 20, bottom: 30, left: 45 }
+  const innerW = W - PAD.left - PAD.right
+  const innerH = H - PAD.top - PAD.bottom
+  const maxBuf = 60
+
+  // Zone backgrounds
+  const zones = [
+    { y1: 0, y2: 10, color: 'rgba(229,9,20,0.12)', label: 'Reservoir' },
+    { y1: 10, y2: 45, color: 'rgba(245,166,35,0.10)', label: 'Cushion' },
+    { y1: 45, y2: 60, color: 'rgba(70,211,105,0.10)', label: 'Upper' },
+  ]
+
+  const points = data.map((d, i) => ({
+    x: PAD.left + (i / Math.max(1, data.length - 1)) * innerW,
+    y: PAD.top + innerH - (Math.min(d.buffer_seconds || 0, maxBuf) / maxBuf) * innerH,
+    zone: d.buffer_zone,
+    quality: d.quality,
+    buf: d.buffer_seconds,
+  }))
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  const zoneColors = { reservoir: '#e50914', cushion: '#f5a623', upper_reservoir: '#46d369' }
+
+  return (
+    <div className="admin-panel" style={{ padding: 12, overflow: 'hidden' }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}>
+        {/* Zone bands */}
+        {zones.map(z => (
+          <rect key={z.label}
+            x={PAD.left} width={innerW}
+            y={PAD.top + innerH - (z.y2 / maxBuf) * innerH}
+            height={((z.y2 - z.y1) / maxBuf) * innerH}
+            fill={z.color}
+          />
+        ))}
+        {/* Zone threshold lines */}
+        {[10, 45].map(t => (
+          <line key={t}
+            x1={PAD.left} x2={PAD.left + innerW}
+            y1={PAD.top + innerH - (t / maxBuf) * innerH}
+            y2={PAD.top + innerH - (t / maxBuf) * innerH}
+            stroke="#444" strokeDasharray="4 3" strokeWidth={0.5}
+          />
+        ))}
+        {/* Y-axis labels */}
+        {[0, 10, 20, 30, 40, 50, 60].map(v => (
+          <text key={v}
+            x={PAD.left - 6}
+            y={PAD.top + innerH - (v / maxBuf) * innerH + 3}
+            textAnchor="end" fontSize={9} fill="#666"
+          >{v}s</text>
+        ))}
+        {/* Zone labels on right */}
+        {zones.map(z => (
+          <text key={`lbl-${z.label}`}
+            x={PAD.left + innerW + 2}
+            y={PAD.top + innerH - ((z.y1 + z.y2) / 2 / maxBuf) * innerH + 3}
+            fontSize={7} fill="#555"
+          >{z.label}</text>
+        ))}
+        {/* Line */}
+        <path d={pathD} fill="none" stroke="#f5a623" strokeWidth={2} strokeLinejoin="round" />
+        {/* Dots */}
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r={3}
+            fill={zoneColors[p.zone] || '#f5a623'} stroke="#111" strokeWidth={1}
+          >
+            <title>{`${p.buf?.toFixed(1)}s • ${p.zone} • ${p.quality}`}</title>
+          </circle>
+        ))}
+        {/* X-axis label */}
+        <text x={PAD.left + innerW / 2} y={H - 4} textAnchor="middle" fontSize={9} fill="#555">
+          Buffer events over time ({data.length} samples)
+        </text>
+      </svg>
     </div>
   )
 }
