@@ -1002,9 +1002,24 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
             }}>
               <div
                 onClick={seekToPercent}
-                style={{ height: 6, background: '#505050', borderRadius: 99, cursor: 'pointer', marginBottom: 10 }}
+                style={{ position: 'relative', height: 6, background: '#505050', borderRadius: 99, cursor: 'pointer', marginBottom: 10 }}
               >
-                <div style={{ height: '100%', width: `${(playhead / duration) * 100}%`, borderRadius: 99, background: '#e50914' }} />
+                {/* Buffer loaded bar (grey, behind playhead) */}
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, height: '100%', borderRadius: 99, background: 'rgba(255,255,255,0.3)',
+                  width: `${(() => {
+                    const el = videoRef.current
+                    if (!el?.buffered?.length || !duration) return 0
+                    let end = 0
+                    for (let i = 0; i < el.buffered.length; i++) {
+                      if (el.buffered.start(i) <= playhead) end = Math.max(end, el.buffered.end(i))
+                    }
+                    return Math.min(100, (end / duration) * 100)
+                  })()}%`,
+                  transition: 'width 0.3s ease',
+                }} />
+                {/* Playhead bar (red) */}
+                <div style={{ position: 'relative', height: '100%', width: `${(playhead / duration) * 100}%`, borderRadius: 99, background: '#e50914' }} />
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#fff', position: 'relative' }}>
