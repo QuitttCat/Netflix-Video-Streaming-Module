@@ -24,6 +24,12 @@ class PlaybackProgressRequest(BaseModel):
     playhead_position: float
 
 
+class QualityOverrideRequest(BaseModel):
+    session_id: str
+    quality: str
+    manual_override: bool = True
+
+
 def _score_node(node: CDNNode, client_region: str) -> float:
     region_bonus = 0 if (node.location or "").lower() == (client_region or "").lower() else 100
     return region_bonus + float(node.load_percent or 0.0) + float(node.latency_ms or 0) / 10.0
@@ -332,4 +338,31 @@ async def get_manifest_meta(video_id: int, db: AsyncSession = Depends(get_db)):
         "duration":       video.duration_seconds,
         "total_segments": video.total_segments,
         "qualities":      video.available_qualities,
+    }
+
+
+@router.patch("/quality")
+async def update_quality(
+    payload: QualityOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Session).where(Session.id == payload.session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != user.username:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    await db.execute(
+        update(Session)
+        .where(Session.id == payload.session_id)
+        .values(quality=payload.quality)
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "session_id": payload.session_id,
+        "quality": payload.quality,
+        "manual_override": payload.manual_override,
     }

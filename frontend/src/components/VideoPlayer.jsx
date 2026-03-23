@@ -493,9 +493,12 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   useEffect(() => {
     const { quality: q, zone: z } = bba(simBuf)
     setZone(z)
-    setQuality(q)
+    // Only let BBA drive quality when in auto mode
+    if (resolutionPreset === 'auto') {
+      setQuality(q)
+    }
     setPriority(simBuf < 5 ? 'audio' : 'video')
-  }, [simBuf])
+  }, [simBuf, resolutionPreset])
 
   // Report buffer to backend every 3s
   const report = useCallback(async () => {
@@ -765,6 +768,22 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     setShowEpisodePicker(false)
   }
 
+  const notifyQualityChange = (newQuality, manualOverride) => {
+    if (!session?.session_id || !token) return
+    fetch('/api/playback/quality', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session_id: session.session_id,
+        quality: newQuality,
+        manual_override: manualOverride,
+      }),
+    }).catch(() => {})
+  }
+
   const applyResolutionPreset = (presetKey) => {
     setResolutionPreset(presetKey)
     const player = playerRef.current
@@ -775,6 +794,10 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
     if (presetKey === 'auto') {
       player.updateSettings?.({ streaming: { abr: { autoSwitchBitrate: { video: true, audio: true } } } })
+      // Let BBA drive quality again
+      const { quality: q } = bba(simBuf)
+      setQuality(q)
+      notifyQualityChange(q, false)
       showAction('Auto Quality', 'HD')
       return
     }
@@ -796,6 +819,11 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
       }
     })
     player.setQualityFor('video', bestIndex, true)
+
+    // Map preset key to quality label and update state + backend
+    const qualityLabel = presetKey === 'hd' ? '1080p' : presetKey
+    setQuality(qualityLabel)
+    notifyQualityChange(qualityLabel, true)
     showAction(selected?.label || 'Quality Changed', 'HD')
   }
 
