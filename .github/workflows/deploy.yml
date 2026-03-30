@@ -12,11 +12,11 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
           script: |
-            cd /home/${{ secrets.EC2_USER }}/Netflix-Video-Streaming-Module
+            cd /root/Netflix-Video-Streaming-Module
             git pull origin main
             docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
             echo "Deploy complete"
