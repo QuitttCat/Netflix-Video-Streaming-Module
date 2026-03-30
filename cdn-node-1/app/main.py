@@ -32,7 +32,9 @@ _active_reqs  = 0
 async def _register():
     """Register this CDN node with the origin server on startup."""
     await asyncio.sleep(5)
-    node_url = f"http://{NODE_ID}:{NODE_PORT}"
+    # NODE_PUBLIC_URL allows production deployments to register a browser-accessible URL
+    # (e.g. http://1.2.3.4:3001) instead of the docker-internal name
+    node_url = os.getenv("NODE_PUBLIC_URL") or f"http://{NODE_ID}:{NODE_PORT}"
     async with httpx.AsyncClient() as client:
         for attempt in range(15):
             try:
