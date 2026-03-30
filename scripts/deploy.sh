@@ -1,5 +1,5 @@
 #!/bin/bash
-# Production deploy script — run on your EC2 server
+# Production deploy script — run on your DigitalOcean Droplet
 set -e
 
 echo "==> Pulling latest code..."
