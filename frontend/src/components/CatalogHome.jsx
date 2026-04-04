@@ -443,7 +443,7 @@ async function resolveTrailerCdnUrl(seriesId, trailer) {
   }
 }
 
-function Card({ item, type, edge = 'middle', onClick, clickable }) {
+function Card({ item, type, onClick, clickable }) {
   const [hover, setHover] = useState(false)
   const [trailerState, setTrailerState] = useState('Idle')
   const [previewUrl, setPreviewUrl] = useState('')
@@ -562,21 +562,16 @@ function Card({ item, type, edge = 'middle', onClick, clickable }) {
     resetPreview()
   }
 
-  const hoverTransform = (() => {
-    if (!hover) return 'scale(1)'
-    if (type !== 'series') return 'scale(1.08)'
-    if (edge === 'left') return 'translateX(18px) scale(1.16)'
-    if (edge === 'right') return 'translateX(-18px) scale(1.16)'
-    return 'scale(1.16)'
-  })()
+  const trailerZoomActive = hover && type === 'series' && trailer?.available
+  const cardClassName = `nf-card${trailerZoomActive ? ' nf-card--trailer-hover' : ''}`
 
   return (
     <div
       onMouseEnter={handleHoverStart}
       onMouseLeave={handleHoverEnd}
       onClick={clickable ? onClick : undefined}
-      className="nf-card"
-      style={{ cursor: clickable ? 'pointer' : 'default', transform: hoverTransform, zIndex: hover ? 40 : 'auto', position: 'relative' }}
+      className={cardClassName}
+      style={{ cursor: clickable ? 'pointer' : 'default', zIndex: hover ? 120 : 1, position: 'relative' }}
     >
       <div
         className="nf-card-media"
@@ -614,7 +609,9 @@ function Card({ item, type, edge = 'middle', onClick, clickable }) {
           />
         )}
 
-        <div className="nf-card-overlay-play"><span>▶</span></div>
+        {!(showPreview && previewReady) && (
+          <div className="nf-card-overlay-play"><span>▶</span></div>
+        )}
 
         {!imageUrl && (
           <div style={{
