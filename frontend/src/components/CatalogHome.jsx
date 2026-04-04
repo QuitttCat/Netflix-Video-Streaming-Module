@@ -433,7 +433,12 @@ async function fetchTrailerBlob(url) {
 async function resolveTrailerCdnUrl(seriesId, trailer) {
   if (!seriesId || !trailer?.cdn_path) return null
   try {
-    const r = await fetch(`/api/cdn/best-node?videoId=1&clientRegion=dhaka`)
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    const clientRegion = tz.includes('Calcutta') || tz.includes('Kolkata') || tz.includes('Dhaka') ? 'bangalore'
+      : tz.includes('Frankfurt') || tz.includes('Berlin') || tz.includes('Europe') ? 'frankfurt'
+      : tz.includes('America') ? 'san-francisco'
+      : 'bangalore'
+    const r = await fetch(`/api/cdn/best-node?videoId=1&clientRegion=${clientRegion}`)
     const payload = await r.json()
     if (!r.ok || !payload?.url) return null
     const base = normalizeHostUrl(payload.url).replace(/\/$/, '')

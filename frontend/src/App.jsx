@@ -63,7 +63,12 @@ export default function App() {
   }
 
   const requestPlaybackSession = async (videoId, token) => {
-    const r = await fetch(`/api/playback/start?videoId=${videoId}&clientRegion=dhaka`, {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    const clientRegion = tz.includes('Calcutta') || tz.includes('Kolkata') || tz.includes('Dhaka') ? 'bangalore'
+      : tz.includes('Frankfurt') || tz.includes('Berlin') || tz.includes('Europe') ? 'frankfurt'
+      : tz.includes('America') ? 'san-francisco'
+      : 'bangalore'
+    const r = await fetch(`/api/playback/start?videoId=${videoId}&clientRegion=${clientRegion}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     const data = await r.json()
