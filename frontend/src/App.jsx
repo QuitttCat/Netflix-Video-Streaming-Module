@@ -60,14 +60,20 @@ export default function App() {
     if (resolvedVideoId) {
       localStorage.setItem('last_playback_video_id', String(resolvedVideoId))
     }
+    if (data.cdn_node?.location) {
+      localStorage.setItem('last_cdn_location', data.cdn_node.location)
+    }
   }
 
   const requestPlaybackSession = async (videoId, token) => {
+    // Prefer the last working CDN location (survives failover), fall back to timezone
+    const savedLocation = localStorage.getItem('last_cdn_location')
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
-    const clientRegion = tz.includes('Calcutta') || tz.includes('Kolkata') || tz.includes('Dhaka') ? 'bangalore'
+    const tzRegion = tz.includes('Calcutta') || tz.includes('Kolkata') || tz.includes('Dhaka') ? 'bangalore'
       : tz.includes('Frankfurt') || tz.includes('Berlin') || tz.includes('Europe') ? 'frankfurt'
       : tz.includes('America') ? 'san-francisco'
       : 'bangalore'
+    const clientRegion = savedLocation || tzRegion
     const r = await fetch(`/api/playback/start?videoId=${videoId}&clientRegion=${clientRegion}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -174,6 +180,7 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('auth')
     localStorage.removeItem('last_playback_video_id')
+    localStorage.removeItem('last_cdn_location')
     setAuth(null)
     setView('home')
     setSession(null)

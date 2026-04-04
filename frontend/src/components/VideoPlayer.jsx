@@ -359,17 +359,20 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           const pathMatch = oldUrl.match(/\/videos\/.*/)
           if (pathMatch) {
             const newManifest = `${clientUrl}${pathMatch[0]}`
-            const onReady = () => {
-              player.off(dashjs.MediaPlayer.events.STREAM_INITIALIZED, onReady)
-              if (videoRef.current) {
-                videoRef.current.currentTime = currentTime
-                if (wasPlaying) videoRef.current.play().catch(() => {})
-              }
+            // Use canplay event — more reliable than STREAM_INITIALIZED on attachSource
+            const vid = videoRef.current
+            if (vid) {
+              vid.addEventListener('canplay', function onCanPlay() {
+                vid.removeEventListener('canplay', onCanPlay)
+                vid.currentTime = currentTime
+                if (wasPlaying) vid.play().catch(() => {})
+              }, { once: true })
             }
-            player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, onReady)
             player.attachSource(newManifest)
           }
         }
+        // Save the new node's location so refresh doesn't route back to the dead node
+        if (best.location) localStorage.setItem('last_cdn_location', best.location)
         const prevName = current.name || currentId
         setCdnSwitchMsg(`CDN failover: ${prevName} → ${best.name}`)
         setTimeout(() => setCdnSwitchMsg(null), 5000)
