@@ -350,7 +350,6 @@ export default function App() {
 
       {view === 'player' && session && (
         <VideoPlayer
-          key={session.manifest_url}
           session={session}
           video={selVideo}
           user={auth.user}
