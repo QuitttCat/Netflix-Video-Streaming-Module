@@ -108,10 +108,11 @@ function pickDefaultSubtitleTrack(tracks) {
   return defaults.find(track => normalizeLanguage(track.language) === 'eng') || defaults[0] || null
 }
 
-export default function VideoPlayer({ session, video, user, token, onPlayNextEpisode }) {
+export default function VideoPlayer({ session, video, user, token, onPlayNextEpisode, onManifestSwitch }) {
   const videoRef = useRef(null)
   const playerRef = useRef(null)
   const resumeAppliedRef = useRef(false)
+  const cdnSwitchResumeRef = useRef(null)  // resume time to use when CDN switch triggers reiniit
   const lastProgressSavedAtRef = useRef(0)
   const [playing, setPlaying] = useState(false)
   const [muted, setMuted] = useState(false)
@@ -214,7 +215,9 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     const manifestUrl = session.manifest_url
 
     const player = dashjs.MediaPlayer().create()
-    player.initialize(videoRef.current, manifestUrl, true)
+    const startTime = cdnSwitchResumeRef.current ?? undefined
+    cdnSwitchResumeRef.current = null
+    player.initialize(videoRef.current, manifestUrl, true, startTime)
     player.updateSettings({
       streaming: {
         buffer: {
@@ -356,19 +359,14 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const best = alive.reduce((a, b) => (a.latency_ms || 999) <= (b.latency_ms || 999) ? a : b)
 
         // Switch to the replacement node
-        const player = playerRef.current
-        const currentTime = videoRef.current?.currentTime || 0
-        const wasPlaying = !videoRef.current?.paused
-        if (player) {
-          // Use the node's registered public URL directly
-          const clientUrl = (best.url || '').replace(/\/$/, '')
-          const oldUrl = session.manifest_url || ''
-          const pathMatch = oldUrl.match(/\/videos\/.*/)
-          if (pathMatch) {
-            const newManifest = `${clientUrl}${pathMatch[0]}`
-            player.reset()
-            player.initialize(videoRef.current, newManifest, wasPlaying, currentTime)
-          }
+        const clientUrl = (best.url || '').replace(/\/$/, '')
+        const oldUrl = session.manifest_url || ''
+        const pathMatch = oldUrl.match(/\/videos\/.*/)
+        if (pathMatch && onManifestSwitch) {
+          const newManifest = `${clientUrl}${pathMatch[0]}`
+          // Save resume time — picked up by player init useEffect on re-render
+          cdnSwitchResumeRef.current = videoRef.current?.currentTime || 0
+          onManifestSwitch(newManifest)
         }
         const prevName = current.name || currentId
         setCdnSwitchMsg(`CDN failover: ${prevName} → ${best.name}`)

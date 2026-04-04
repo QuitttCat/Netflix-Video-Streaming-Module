@@ -258,6 +258,10 @@ export default function App() {
     }
   }
 
+  const handleManifestSwitch = (newManifestUrl) => {
+    setSession(prev => prev ? { ...prev, manifest_url: newManifestUrl } : prev)
+  }
+
   const handlePlaySeries = async (seriesId) => {
     try {
       const r = await fetch(`/api/catalog/series/${seriesId}/episodes`, {
@@ -351,6 +355,7 @@ export default function App() {
           user={auth.user}
           token={auth.token}
           onPlayNextEpisode={handlePlayNextEpisode}
+          onManifestSwitch={handleManifestSwitch}
         />
       )}
 
