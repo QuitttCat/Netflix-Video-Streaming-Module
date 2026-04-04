@@ -120,7 +120,10 @@ video.nf-player::cue {
   gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 2px 0 14px;
+  padding: 2px 0 108px;
+  margin: 0;
+  position: relative;
+  z-index: 4;
   scroll-snap-type: x proximity;
 }
 
@@ -141,13 +144,11 @@ video.nf-player::cue {
   min-width: 250px;
   width: 250px;
   border-radius: 8px;
-  overflow: hidden;
+  overflow: visible;
   background: var(--nf-surface);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: transform 360ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 300ms ease, border-color 300ms ease;
+  transition: box-shadow 300ms ease, border-color 300ms ease;
   scroll-snap-align: start;
-  transform-origin: center center;
-  will-change: transform;
 }
 
 .nf-card:hover {
@@ -161,15 +162,25 @@ video.nf-player::cue {
   background-size: cover;
   background-position: center;
   overflow: hidden;
+  border-radius: 8px;
+  transition: transform 360ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 320ms ease;
+  transform-origin: top left;
 }
 
 .trailer-preview-video {
   transition: opacity 320ms ease, transform 420ms ease;
-  transform: scale(1.025);
+  transform: scale(1);
+  transform-origin: center center;
 }
 
-.nf-card:hover .trailer-preview-video {
-  transform: scale(1.0);
+.nf-card--trailer-hover .nf-card-media {
+  transform: scale(1.78);
+  box-shadow: 0 28px 46px rgba(0, 0, 0, 0.56);
+  z-index: 6;
+}
+
+.nf-card--trailer-hover .trailer-preview-video {
+  transform: scale(1.08);
 }
 
 .nf-card-overlay-play {
@@ -185,6 +196,11 @@ video.nf-player::cue {
 
 .nf-card:hover .nf-card-overlay-play {
   opacity: 1;
+}
+
+.nf-card--trailer-hover .nf-card-overlay-play {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .nf-card-overlay-play span {

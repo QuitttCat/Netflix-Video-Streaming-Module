@@ -45,26 +45,62 @@ const NET_PRESETS = {
 }
 
 const LANGUAGE_LABELS = {
-  chi: 'Chinese',
+  chi: 'Chinese (Simplified)',
+  zho: 'Chinese (Simplified)',
+  zh: 'Chinese (Simplified)',
   eng: 'English',
+  en: 'English',
   fre: 'French',
+  fra: 'French',
   hin: 'Hindi',
+  hi: 'Hindi',
   ind: 'Indonesian',
+  id: 'Indonesian',
   jpn: 'Japanese',
+  ja: 'Japanese',
   kor: 'Korean',
-  por: 'Portuguese',
+  ko: 'Korean',
+  por: 'Portuguese (Brazil)',
+  pt: 'Portuguese',
+  'pt-br': 'Portuguese (Brazil)',
   rus: 'Russian',
+  ru: 'Russian',
   spa: 'Spanish',
+  es: 'Spanish',
   tha: 'Thai',
+  th: 'Thai',
 }
 
 function normalizeLanguage(value) {
-  return String(value || '').trim().toLowerCase()
+  return String(value || '').trim().toLowerCase().replace(/_/g, '-')
+}
+
+function cleanTrackLabel(value) {
+  const label = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!label) return ''
+
+  const withoutCorruptedParens = label
+    .replace(/\s*\(([^)]*)\)/g, (full, inner) => {
+      const hasCorruptedText = /[^\x20-\x7E]/.test(inner)
+      return hasCorruptedText ? '' : full
+    })
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+
+  if (!withoutCorruptedParens) return ''
+
+  return withoutCorruptedParens
 }
 
 function trackLabel(track) {
   const language = normalizeLanguage(track?.language || track?.lang)
-  return track?.label || LANGUAGE_LABELS[language] || (language ? language.toUpperCase() : 'Unknown')
+  const languageBase = language.split('-')[0]
+  return (
+    LANGUAGE_LABELS[language] ||
+    LANGUAGE_LABELS[languageBase] ||
+    cleanTrackLabel(track?.label) ||
+    (language ? language.toUpperCase() : 'Unknown')
+  )
 }
 
 function pickDefaultSubtitleTrack(tracks) {
