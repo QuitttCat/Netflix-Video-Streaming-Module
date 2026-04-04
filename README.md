@@ -177,7 +177,27 @@ GET /api/videos/1/chunk-stream1-00001.m4s   200 OK
 ...
 ```
 
-All 3 CDN nodes registered themselves and kept sending heartbeats every 5 seconds. The system picked cdn-node-1 (edge-dhaka) as the best node for our session since our simulated region was "dhaka".
+All 3 CDN nodes registered themselves and kept sending heartbeats every 5 seconds.
+
+**CDN Region Selection**
+
+When a playback session starts, the frontend detects the user's timezone using `Intl.DateTimeFormat().resolvedOptions().timeZone` and maps it to a region:
+
+- Kolkata / Calcutta / Dhaka timezone → `bangalore`
+- Frankfurt / Berlin / any Europe timezone → `frankfurt`
+- America timezones → `san-francisco`
+
+Before actually using that region, the frontend first calls `/api/cdn/stats` to check if that region's node has sent a heartbeat in the last 20 seconds. If it's healthy, the request goes to that node. If it's down or stale, the frontend picks the healthiest available node instead (sorted by latency). This means changing your timezone in browser devtools will always affect which node you get routed to, but you won't get sent to a dead node.
+
+This region is then passed to `/api/playback/start?videoId=X&clientRegion=Y`. The backend scores all active nodes -- nodes in the matching region get a 0 penalty, others get +100 -- and picks the best one by latency and load.
+
+**CDN Failover Mid-Session**
+
+While a video is playing, the frontend checks CDN health every 15 seconds by polling `/api/cdn/stats`. If the current node's last heartbeat is older than 20 seconds, it's considered dead. The frontend then looks for any other node with a fresh heartbeat, picks the one with the lowest latency, and switches the player to the new node's manifest URL.
+
+When a switch happens, a green banner shows at the top of the player ("CDN failover: edge-bangalore → edge-frankfurt") for 5 seconds.
+
+The failover only triggers if the current node is actually dead. It won't switch just because another node has slightly better latency -- that would cause unnecessary interruptions during a session.
 
 One problem we ran into was that since everything runs on localhost, the bandwidth between services is essentially infinite. That means dash.js fills its buffer to the max almost instantly, so the BBA algorithm never gets a chance to adapt -- the buffer just sits at 60 seconds and quality stays locked at 1080p. To fix this, we added a network simulator on the frontend that runs a simulated buffer alongside the real player. Every 500ms, the simulated buffer gains `(networkCap / currentQualityBitrate) × 0.5` seconds and loses `0.5` seconds to playback. So if the simulated network speed can't keep up with the current quality's bitrate, the buffer drains and BBA kicks in to drop quality -- exactly like it would on a real network.
 
