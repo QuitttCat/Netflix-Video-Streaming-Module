@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: Deploy to DigitalOcean Droplet
 
 on:
   push:
@@ -16,7 +16,24 @@ jobs:
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           script: |
+            # Install Docker if not present
+            if ! command -v docker &> /dev/null; then
+              curl -fsSL https://get.docker.com | sh
+            fi
+
+            # Clone repo if not present, otherwise pull latest
+            if [ ! -d /root/Netflix-Video-Streaming-Module ]; then
+              git clone https://github.com/${{ github.repository }}.git /root/Netflix-Video-Streaming-Module
+            fi
+
             cd /root/Netflix-Video-Streaming-Module
             git pull origin main
+
+            # Ensure .env.prod exists
+            if [ ! -f .env.prod ]; then
+              echo "ERROR: .env.prod not found on Droplet. Create it before deploying."
+              exit 1
+            fi
+
             docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
             echo "Deploy complete"
