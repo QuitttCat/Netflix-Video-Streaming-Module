@@ -366,10 +366,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           const pathMatch = oldUrl.match(/\/videos\/.*/)
           if (pathMatch) {
             const newManifest = `${clientUrl}${pathMatch[0]}`
-            // Use canplay event — more reliable than STREAM_INITIALIZED on attachSource
-            // Pass currentTime as start position so dash.js buffers from there directly.
-            // STREAM_INITIALIZED will fire again and call tryAutoplay() to resume playback.
-            player.attachSource(newManifest, currentTime)
+            player.reset()
+            player.initialize(videoRef.current, newManifest, wasPlaying, currentTime)
           }
         }
         const prevName = current.name || currentId
