@@ -53,8 +53,8 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
     volumes:
       - video_data:/videos
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,79 +65,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  cdn-node-1:
-    build:
-      context: ./cdn-node-1
-    container_name: netflix_cdn_1
-    restart: always
-    environment:
-      NODE_ID: cdn-node-1
-      NODE_NAME: edge-dhaka
-      NODE_LOCATION: dhaka
-      NODE_PORT: "3001"
-      ORIGIN_URL: http://origin:8000
-      # Public URL that browsers can reach — set to your Droplet's Reserved IP
-      NODE_PUBLIC_URL: ${CDN1_PUBLIC_URL}
-      CACHE_PATH: /cache
-    volumes:
-      - cdn1_cache:/cache
-      - video_data:/videos:ro
-    expose:
-      - "3001"
-    ports:
-      - "3001:3001"
-    depends_on:
-      origin:
-        condition: service_healthy
-
-  cdn-node-2:
-    build:
-      context: ./cdn-node-2
-    container_name: netflix_cdn_2
-    restart: always
-    environment:
-      NODE_ID: cdn-node-2
-      NODE_NAME: edge-chittagong
-      NODE_LOCATION: chittagong
-      NODE_PORT: "3002"
-      ORIGIN_URL: http://origin:8000
-      NODE_PUBLIC_URL: ${CDN2_PUBLIC_URL}
-      CACHE_PATH: /cache
-    volumes:
-      - cdn2_cache:/cache
-      - video_data:/videos:ro
-    expose:
-      - "3002"
-    ports:
-      - "3002:3002"
-    depends_on:
-      origin:
-        condition: service_healthy
-
-  cdn-node-3:
-    build:
-      context: ./cdn-node-3
-    container_name: netflix_cdn_3
-    restart: always
-    environment:
-      NODE_ID: cdn-node-3
-      NODE_NAME: edge-sylhet
-      NODE_LOCATION: sylhet
-      NODE_PORT: "3003"
-      ORIGIN_URL: http://origin:8000
-      NODE_PUBLIC_URL: ${CDN3_PUBLIC_URL}
-      CACHE_PATH: /cache
-    volumes:
-      - cdn3_cache:/cache
-      - video_data:/videos:ro
-    expose:
-      - "3003"
-    ports:
-      - "3003:3003"
-    depends_on:
-      origin:
-        condition: service_healthy
 
   frontend:
     build:
@@ -155,7 +82,4 @@ services:
 
 volumes:
   video_data:
-  cdn1_cache:
-  cdn2_cache:
-  cdn3_cache:
   postgres_data:

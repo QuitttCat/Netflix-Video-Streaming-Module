@@ -6,43 +6,33 @@ on:
       - main
 
 jobs:
-  deploy:
+  # ── Main server: Origin + Postgres + Redis + Frontend ──────────────────────
+  deploy-origin:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
+      - name: Deploy origin server
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           script: |
-            # Install Docker if not present
             if ! command -v docker &> /dev/null; then
               curl -fsSL https://get.docker.com | sh
             fi
-
-            # Clone repo if not present, otherwise pull latest
             if [ ! -d /root/Netflix-Video-Streaming-Module ]; then
               git clone https://github.com/${{ github.repository }}.git /root/Netflix-Video-Streaming-Module
             fi
-
             cd /root/Netflix-Video-Streaming-Module
             git pull origin main
-
-            # Ensure .env.prod exists
             if [ ! -f .env.prod ]; then
-              echo "ERROR: .env.prod not found on Droplet. Create it before deploying."
+              echo "ERROR: .env.prod not found on Droplet."
               exit 1
             fi
-
             docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
-
-            # Wait for postgres to be ready before seeding
             until docker exec netflix_postgres pg_isready -U netflix -d netflix_streaming > /dev/null 2>&1; do
               sleep 2
             done
-
-            # Seed DB only if empty — runs once ever since data lives in persistent volume
             SEEDED=$(docker exec netflix_postgres psql -U netflix -d netflix_streaming -tAc "SELECT COUNT(*) FROM series;" 2>/dev/null || echo "0")
             if [ "$SEEDED" = "0" ]; then
               docker exec -i netflix_postgres psql -U netflix -d netflix_streaming < /root/Netflix-Video-Streaming-Module/seed_data.sql
@@ -50,5 +40,85 @@ jobs:
             else
               echo "DB already seeded ($SEEDED series), skipping."
             fi
+            echo "Origin deploy complete"
 
-            echo "Deploy complete"
+  # ── CDN Node 1 — Bangalore ──────────────────────────────────────────────────
+  deploy-cdn1:
+    runs-on: ubuntu-latest
+    needs: deploy-origin
+    steps:
+      - name: Deploy CDN Node 1 (Bangalore)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CDN1_HOST }}
+          username: ${{ secrets.CDN1_USER }}
+          key: ${{ secrets.CDN1_SSH_KEY }}
+          script: |
+            if ! command -v docker &> /dev/null; then
+              curl -fsSL https://get.docker.com | sh
+            fi
+            if [ ! -d /root/Netflix-Video-Streaming-Module ]; then
+              git clone https://github.com/${{ github.repository }}.git /root/Netflix-Video-Streaming-Module
+            fi
+            cd /root/Netflix-Video-Streaming-Module
+            git pull origin main
+            if [ ! -f .env.cdn ]; then
+              echo "ERROR: .env.cdn not found. Create from .env.cdn1.example"
+              exit 1
+            fi
+            docker compose -f docker-compose.cdn.yml --env-file .env.cdn up --build -d
+            echo "CDN Node 1 deploy complete"
+
+  # ── CDN Node 2 — San Francisco ──────────────────────────────────────────────
+  deploy-cdn2:
+    runs-on: ubuntu-latest
+    needs: deploy-origin
+    steps:
+      - name: Deploy CDN Node 2 (San Francisco)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CDN2_HOST }}
+          username: ${{ secrets.CDN2_USER }}
+          key: ${{ secrets.CDN2_SSH_KEY }}
+          script: |
+            if ! command -v docker &> /dev/null; then
+              curl -fsSL https://get.docker.com | sh
+            fi
+            if [ ! -d /root/Netflix-Video-Streaming-Module ]; then
+              git clone https://github.com/${{ github.repository }}.git /root/Netflix-Video-Streaming-Module
+            fi
+            cd /root/Netflix-Video-Streaming-Module
+            git pull origin main
+            if [ ! -f .env.cdn ]; then
+              echo "ERROR: .env.cdn not found. Create from .env.cdn2.example"
+              exit 1
+            fi
+            docker compose -f docker-compose.cdn.yml --env-file .env.cdn up --build -d
+            echo "CDN Node 2 deploy complete"
+
+  # ── CDN Node 3 — Frankfurt ──────────────────────────────────────────────────
+  deploy-cdn3:
+    runs-on: ubuntu-latest
+    needs: deploy-origin
+    steps:
+      - name: Deploy CDN Node 3 (Frankfurt)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CDN3_HOST }}
+          username: ${{ secrets.CDN3_USER }}
+          key: ${{ secrets.CDN3_SSH_KEY }}
+          script: |
+            if ! command -v docker &> /dev/null; then
+              curl -fsSL https://get.docker.com | sh
+            fi
+            if [ ! -d /root/Netflix-Video-Streaming-Module ]; then
+              git clone https://github.com/${{ github.repository }}.git /root/Netflix-Video-Streaming-Module
+            fi
+            cd /root/Netflix-Video-Streaming-Module
+            git pull origin main
+            if [ ! -f .env.cdn ]; then
+              echo "ERROR: .env.cdn not found. Create from .env.cdn3.example"
+              exit 1
+            fi
+            docker compose -f docker-compose.cdn.yml --env-file .env.cdn up --build -d
+            echo "CDN Node 3 deploy complete"
