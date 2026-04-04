@@ -36,4 +36,19 @@ jobs:
             fi
 
             docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
+
+            # Wait for postgres to be ready before seeding
+            until docker exec netflix_postgres pg_isready -U netflix -d netflix_streaming > /dev/null 2>&1; do
+              sleep 2
+            done
+
+            # Seed DB only if empty — runs once ever since data lives in persistent volume
+            SEEDED=$(docker exec netflix_postgres psql -U netflix -d netflix_streaming -tAc "SELECT COUNT(*) FROM series;" 2>/dev/null || echo "0")
+            if [ "$SEEDED" = "0" ]; then
+              docker exec -i netflix_postgres psql -U netflix -d netflix_streaming < /root/Netflix-Video-Streaming-Module/seed_data.sql
+              echo "Database seeded."
+            else
+              echo "DB already seeded ($SEEDED series), skipping."
+            fi
+
             echo "Deploy complete"
