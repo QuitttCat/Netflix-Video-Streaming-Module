@@ -232,30 +232,34 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     // We use a ref for the metadata so this closure never goes stale without being in deps.
     const handleStreamInitialized = () => {
       const dashTracks = player.getTracksFor?.('audio') || []
-      if (!dashTracks.length) return
 
-      const options = dashTracks.map((t, i) => {
-        const lang = normalizeLanguage(t.lang || t.language)
-        const meta = metadataAudioTracksRef.current.find(m => normalizeLanguage(m.language) === lang)
-        return {
-          index: String(i),
-          label: meta?.label || LANGUAGE_LABELS[lang] || (lang ? lang.toUpperCase() : `Track ${i + 1}`),
-          language: lang,
-          is_default: Boolean(meta?.is_default),
-        }
-      })
-      setAudioOptions(options)
+      if (dashTracks.length) {
+        const options = dashTracks.map((t, i) => {
+          const lang = normalizeLanguage(t.lang || t.language)
+          const meta = metadataAudioTracksRef.current.find(m => normalizeLanguage(m.language) === lang)
+          return {
+            index: String(i),
+            label: meta?.label || LANGUAGE_LABELS[lang] || (lang ? lang.toUpperCase() : `Track ${i + 1}`),
+            language: lang,
+            is_default: Boolean(meta?.is_default),
+          }
+        })
+        setAudioOptions(options)
 
-      // Apply the default track once — never on subsequent TRACK_CHANGE_RENDERED callbacks
-      if (!audioInitDoneRef.current) {
-        audioInitDoneRef.current = true
-        const defaultOpt = options.find(o => o.is_default) || options[0]
-        if (defaultOpt) {
-          setSelectedAudioIndex(defaultOpt.index)
-          const defaultTrack = dashTracks[Number(defaultOpt.index)]
-          if (defaultTrack) player.setCurrentTrack(defaultTrack)
+        // Apply the default track once — never on subsequent TRACK_CHANGE_RENDERED callbacks
+        if (!audioInitDoneRef.current) {
+          audioInitDoneRef.current = true
+          const defaultOpt = options.find(o => o.is_default) || options[0]
+          if (defaultOpt) {
+            setSelectedAudioIndex(defaultOpt.index)
+            const defaultTrack = dashTracks[Number(defaultOpt.index)]
+            if (defaultTrack) player.setCurrentTrack(defaultTrack)
+          }
         }
       }
+
+      // Trigger autoplay only after dash.js has the stream ready — not before
+      tryAutoplay()
     }
 
     // Only mirror what dash.js has selected into the UI — never calls setCurrentTrack (no oscillation)
@@ -287,7 +291,10 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
       }
     }
 
-    tryAutoplay()
+    // Clear autoplayBlocked whenever the video actually starts playing
+    // (covers dash.js internal autoplay, manual tap, and CDN failover resume)
+    element.addEventListener('play', () => { setPlaying(true); setAutoplayBlocked(false) })
+
     playerRef.current = player
     setDashReady(true)
 
@@ -363,9 +370,12 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
             const vid = videoRef.current
             if (vid) {
               vid.addEventListener('canplay', function onCanPlay() {
-                vid.removeEventListener('canplay', onCanPlay)
                 vid.currentTime = currentTime
-                if (wasPlaying) vid.play().catch(() => {})
+                if (wasPlaying) {
+                  vid.play()
+                    .then(() => { setAutoplayBlocked(false); setPlaying(true) })
+                    .catch(() => {})
+                }
               }, { once: true })
             }
             player.attachSource(newManifest)
