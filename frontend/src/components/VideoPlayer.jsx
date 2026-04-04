@@ -351,11 +351,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const currentTime = videoRef.current?.currentTime || 0
         const wasPlaying = !videoRef.current?.paused
         if (player) {
-          // Build browser-accessible URL from node URL
-          const rawUrl = best.url || ''
-          const parsed = rawUrl.match(/:(\d+)/)
-          const port = parsed ? parsed[1] : '3001'
-          const clientUrl = `http://localhost:${port}`
+          // Use the node's registered public URL directly
+          const clientUrl = (best.url || '').replace(/\/$/, '')
           const oldUrl = session.manifest_url || ''
           const pathMatch = oldUrl.match(/\/videos\/.*/)
           if (pathMatch) {
