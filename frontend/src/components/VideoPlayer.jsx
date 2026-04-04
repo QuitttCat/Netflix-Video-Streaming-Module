@@ -371,8 +371,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
             player.attachSource(newManifest)
           }
         }
-        // Save the new node's location so refresh doesn't route back to the dead node
-        if (best.location) localStorage.setItem('last_cdn_location', best.location)
         const prevName = current.name || currentId
         setCdnSwitchMsg(`CDN failover: ${prevName} → ${best.name}`)
         setTimeout(() => setCdnSwitchMsg(null), 5000)
@@ -1822,18 +1820,6 @@ function chipStyle(active) {
   }
 }
 
-function listBtnStyle(active) {
-  return {
-    textAlign: 'left',
-    background: active ? 'rgba(229,9,20,0.2)' : 'rgba(255,255,255,0.04)',
-    color: '#fff',
-    border: active ? '1px solid rgba(229,9,20,0.7)' : '1px solid rgba(255,255,255,0.2)',
-    borderRadius: 6,
-    padding: '8px 10px',
-    fontSize: 12,
-    cursor: 'pointer',
-  }
-}
 
 function audioSubListBtnStyle(active) {
   return {

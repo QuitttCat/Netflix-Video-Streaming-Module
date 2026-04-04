@@ -60,20 +60,42 @@ export default function App() {
     if (resolvedVideoId) {
       localStorage.setItem('last_playback_video_id', String(resolvedVideoId))
     }
-    if (data.cdn_node?.location) {
-      localStorage.setItem('last_cdn_location', data.cdn_node.location)
-    }
   }
 
+  // Parse backend heartbeat timestamps (naive UTC, no 'Z' suffix) correctly
+  const parseHb = (ts) => ts ? new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z') : null
+
   const requestPlaybackSession = async (videoId, token) => {
-    // Prefer the last working CDN location (survives failover), fall back to timezone
-    const savedLocation = localStorage.getItem('last_cdn_location')
+    // Always derive preferred region from current timezone (devtools changes always respected)
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
     const tzRegion = tz.includes('Calcutta') || tz.includes('Kolkata') || tz.includes('Dhaka') ? 'bangalore'
       : tz.includes('Frankfurt') || tz.includes('Berlin') || tz.includes('Europe') ? 'frankfurt'
       : tz.includes('America') ? 'san-francisco'
       : 'bangalore'
-    const clientRegion = savedLocation || tzRegion
+
+    // Pre-flight: check if preferred region's node is actually healthy before committing
+    let clientRegion = tzRegion
+    try {
+      const statsRes = await fetch('/api/cdn/stats')
+      if (statsRes.ok) {
+        const stats = await statsRes.json()
+        const nodes = Array.isArray(stats.nodes) ? stats.nodes : []
+        const preferredNode = nodes.find(n => (n.location || '').toLowerCase() === tzRegion)
+        const prefHb = preferredNode ? parseHb(preferredNode.last_heartbeat) : null
+        const prefHealthy = prefHb && (Date.now() - prefHb.getTime()) < 20000
+
+        if (!prefHealthy) {
+          // Preferred region is down — pick the best healthy node instead
+          const healthy = nodes
+            .filter(n => { const hb = parseHb(n.last_heartbeat); return hb && (Date.now() - hb.getTime()) < 20000 })
+            .sort((a, b) => (a.latency_ms || 999) - (b.latency_ms || 999))
+          if (healthy.length > 0) clientRegion = healthy[0].location || tzRegion
+        }
+      }
+    } catch {
+      // Health check failed — proceed with timezone region, backend will handle it
+    }
+
     const r = await fetch(`/api/playback/start?videoId=${videoId}&clientRegion=${clientRegion}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -180,7 +202,6 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('auth')
     localStorage.removeItem('last_playback_video_id')
-    localStorage.removeItem('last_cdn_location')
     setAuth(null)
     setView('home')
     setSession(null)
