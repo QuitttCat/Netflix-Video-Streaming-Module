@@ -326,10 +326,12 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const currentId = current.id || current.node_id
         const currentNode = nodes.find(n => n.id === currentId)
 
+        // Parse heartbeat timestamp as UTC (backend returns naive UTC without 'Z')
+        const parseHb = (ts) => ts ? new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z') : null
+
         // Current node is still alive and healthy — do nothing
         if (currentNode && currentNode.status === 'active') {
-          // Check if heartbeat is recent (within 20s)
-          const lastHb = currentNode.last_heartbeat ? new Date(currentNode.last_heartbeat) : null
+          const lastHb = parseHb(currentNode.last_heartbeat)
           const age = lastHb ? (Date.now() - lastHb.getTime()) : Infinity
           if (age < 20000) return // node is healthy, no switch
         }
@@ -338,7 +340,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const alive = nodes.filter(n => {
           if (n.id === currentId) return false
           if (n.status !== 'active') return false
-          const hb = n.last_heartbeat ? new Date(n.last_heartbeat) : null
+          const hb = parseHb(n.last_heartbeat)
           return hb && (Date.now() - hb.getTime()) < 20000
         })
         if (alive.length === 0) return // no healthy alternatives
