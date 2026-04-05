@@ -15,6 +15,7 @@ from ..schemas import CDNNodeRegister, CDNHeartbeat
 
 router = APIRouter()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")  # e.g. https://netflix.devomatic.dev
 
 
 async def get_redis():
@@ -91,13 +92,19 @@ async def best_node(
 
     best = min(nodes, key=score)
 
-    # Convert docker-internal URL to browser-accessible URL
-    raw_url = best.url or ""
-    parsed = urlparse(raw_url)
-    host = parsed.hostname or ""
-    if host in {"cdn-node-1", "cdn-node-2", "cdn-node-3", "origin"}:
-        host = "localhost"
-    client_url = f"{parsed.scheme}://{host}:{parsed.port}" if parsed.port else f"{parsed.scheme}://{host}"
+    # If PUBLIC_URL is set, route browser traffic through nginx CDN proxy paths
+    # to avoid mixed content (HTTPS page → HTTP CDN node)
+    node_num = best.id.replace("cdn-node-", "") if best.id else ""
+    if PUBLIC_URL and node_num.isdigit():
+        client_url = f"{PUBLIC_URL}/cdn{node_num}"
+    else:
+        # Fallback: direct CDN IP (works for HTTP-only deployments)
+        raw_url = best.url or ""
+        parsed = urlparse(raw_url)
+        host = parsed.hostname or ""
+        if host in {"cdn-node-1", "cdn-node-2", "cdn-node-3", "origin"}:
+            host = "localhost"
+        client_url = f"{parsed.scheme}://{host}:{parsed.port}" if parsed.port else f"{parsed.scheme}://{host}"
 
     return {
         "node_id":      best.id,

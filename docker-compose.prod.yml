@@ -51,6 +51,7 @@ services:
       VIDEO_STORAGE_BACKEND: s3
       S3_MEDIA_ROOT: ${S3_MEDIA_ROOT:-netflix}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      PUBLIC_URL: ${PUBLIC_URL:-}
     volumes:
       - video_data:/videos
     ports:
