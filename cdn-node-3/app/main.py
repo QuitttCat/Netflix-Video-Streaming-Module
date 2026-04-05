@@ -61,11 +61,10 @@ async def _heartbeat_loop():
     async with httpx.AsyncClient() as client:
         while True:
             try:
+                instant_load = min(100.0, _active_reqs * 8.0)
+                _smoothed_load = _smoothed_load * 0.6 + instant_load * 0.4
                 await client.put(
                     f"{ORIGIN_URL}/api/cdn/heartbeat/{NODE_ID}",
-                    # Smooth load: decay toward current value so spikes stay visible
-                    instant_load = min(100.0, _active_reqs * 8.0)
-                    _smoothed_load = _smoothed_load * 0.6 + instant_load * 0.4
                     json={
                         "latency_ms":       random.randint(5, 40),
                         "load_percent":     round(_smoothed_load, 1),
