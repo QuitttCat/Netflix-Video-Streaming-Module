@@ -135,7 +135,7 @@ async def health():
 
 @app.get("/videos/{video_id}/manifest.mpd")
 async def serve_manifest(video_id: int):
-        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
+    global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     _active_reqs += 1
     try:
         cache_path = _manifest_cache(video_id)
@@ -162,7 +162,7 @@ async def serve_manifest(video_id: int):
 
 @app.get("/videos/{video_id}/segments/{quality}/{segment_number}")
 async def serve_segment(video_id: int, quality: str, segment_number: int):
-        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
+    global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     _active_reqs += 1
     try:
         cache_path = _segment_cache(video_id, quality, segment_number)
@@ -191,7 +191,7 @@ async def serve_segment(video_id: int, quality: str, segment_number: int):
 @app.get("/videos/{video_id}/{filename:path}")
 async def serve_dash_file(video_id: int, filename: str):
     """Serve any DASH file (init-stream*.m4s, chunk-stream*.m4s) with CDN caching."""
-        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
+    global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
     if normalized.startswith("../") or normalized == "..":
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -222,7 +222,7 @@ async def serve_dash_file(video_id: int, filename: str):
 
 @app.get("/trailers/{series_id}/{filename:path}")
 async def serve_trailer(series_id: int, filename: str):
-        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
+    global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
     if normalized.startswith("../") or normalized == "..":
         raise HTTPException(status_code=400, detail="Invalid filename")
