@@ -36,12 +36,6 @@ function bba(buf) {
   return { quality: QUALITIES[Math.min(Math.floor(r * QUALITIES.length), QUALITIES.length - 1)], zone: 'cushion' }
 }
 
-// Network condition presets for demo (simulated throughput caps in kbps)
-const NET_PRESETS = {
-  good: { label: 'Good (3 Mbps)', cap: 3000, color: '#46d369' },
-  medium: { label: 'Medium (800 kbps)', cap: 800, color: '#f5a623' },
-  poor: { label: 'Poor (200 kbps)', cap: 200, color: '#e50914' },
-}
 
 const LANGUAGE_LABELS = {
   chi: 'Chinese (Simplified)',
@@ -129,8 +123,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const [prefetchPolling, setPrefetchPolling] = useState(false)
   const [recQuality, setRecQuality] = useState(null)
   const [dashReady, setDashReady] = useState(false)
-  const [netMode, setNetMode] = useState('good')
-  const [simBuf, setSimBuf] = useState(0)  // simulated buffer for BBA demo
+  const [realBuf, setRealBuf] = useState(0)  // actual dash.js buffer level
   const [autoNextCountdown, setAutoNextCountdown] = useState(null)
   const [audioOptions, setAudioOptions] = useState([])
   const [selectedAudioIndex, setSelectedAudioIndex] = useState('')
@@ -179,7 +172,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
   const duration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0, 1)
   const knownDuration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0)
-  const preset = NET_PRESETS[netMode]
   const watchedPercent = Math.max(0, Math.min(100, Math.round((playhead / duration) * 100)))
   const prefetchTriggerProgress = Math.max(0, Math.min(100, Math.round((playhead / duration) / 0.9 * 100)))
   const prefetchUiStatus = prefetchStatus || {
@@ -287,7 +279,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         await element.play()
         setPlaying(true)
         setAutoplayBlocked(false)
-        if (simBuf === 0) setSimBuf(2)
       } catch {
         setAutoplayBlocked(true)
       }
@@ -567,27 +558,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   }, [adjustVolumeBy, resetIdleTimer, playing])
 
   // Simulate buffer dynamics based on network preset
-  // Real dash.js buffer fills too fast on localhost, so we simulate
-  // a separate BBA buffer that drains/fills based on the selected network mode
-  useEffect(() => {
-    if (!playing) return
-    const t = setInterval(() => {
-      setSimBuf(prev => {
-        const capKbps = NET_PRESETS[netMode].cap
-        // Simulate: each tick (500ms), we "download" some data and "consume" some
-        // consumption = current quality bitrate worth of 0.5s
-        const qualityBitrates = { '360p': 400, '480p': 800, '720p': 1500, '1080p': 3000 }
-        const consumeRate = qualityBitrates[quality] || 800  // kbps being consumed
-        const downloadSeconds = capKbps > 0 ? (capKbps / consumeRate) * 0.5 : 0
-        const drainSeconds = 0.5  // we consume 0.5s of buffer per 0.5s tick
-        const delta = downloadSeconds - drainSeconds
-        return Math.max(0, Math.min(MAX_BUF, prev + delta))
-      })
-    }, 500)
-    return () => clearInterval(t)
-  }, [playing, netMode, quality])
-
-  // Poll real playhead from dash.js
+  // Poll real playhead and real buffer level from dash.js
   useEffect(() => {
     if (!dashReady) return
     const t = setInterval(() => {
@@ -597,6 +568,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const time = player.time() || 0
         setPlayhead(time)
         setPlaying(!videoRef.current?.paused)
+        const buf = player.getBufferLength?.('video') ?? 0
+        setRealBuf(Math.min(buf, MAX_BUF))
       } catch (_) { }
     }, 500)
     return () => clearInterval(t)
@@ -604,14 +577,14 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
   // Derive zone & quality from simulated buffer using BBA
   useEffect(() => {
-    const { quality: q, zone: z } = bba(simBuf)
+    const { quality: q, zone: z } = bba(realBuf)
     setZone(z)
     // Only let BBA drive quality when in auto mode
     if (resolutionPreset === 'auto') {
       setQuality(q)
     }
-    setPriority(simBuf < 5 ? 'audio' : 'video')
-  }, [simBuf, resolutionPreset])
+    setPriority(realBuf < 5 ? 'audio' : 'video')
+  }, [realBuf, resolutionPreset])
 
   // Report buffer to backend every 3s
   const report = useCallback(async () => {
@@ -623,17 +596,17 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         body: JSON.stringify({
           session_id: session.session_id,
           video_id: video.id,
-          current_buffer_seconds: simBuf,
+          current_buffer_seconds: realBuf,
           current_quality: quality,
           playhead_position: playhead,
           segments_buffered: Array.from({ length: 5 }, (_, i) => Math.floor(playhead / 4) + i),
-          download_speed_kbps: preset.cap,
+          download_speed_kbps: null,
         }),
       })
       const rec = await r.json()
       setRecQuality(rec.recommended_quality)
     } catch (_) { }
-  }, [simBuf, quality, playhead, session, video, preset])
+  }, [realBuf, quality, playhead, session, video])
 
   const savePlaybackProgress = useCallback(async (force = false) => {
     if (!session?.session_id || !video?.id || !user?.username || !token) return
@@ -743,7 +716,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     if (videoRef.current.paused) {
       videoRef.current.play().then(() => {
         setAutoplayBlocked(false)
-        if (simBuf === 0) setSimBuf(2)
         if (show) showAction('Play', '▶')
       }).catch(() => setAutoplayBlocked(true))
     } else {
@@ -908,7 +880,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     if (presetKey === 'auto') {
       player.updateSettings?.({ streaming: { abr: { autoSwitchBitrate: { video: true, audio: true } } } })
       // Let BBA drive quality again
-      const { quality: q } = bba(simBuf)
+      const { quality: q } = bba(realBuf)
       setQuality(q)
       notifyQualityChange(q, false)
       showAction('Auto Quality', 'HD')
@@ -1587,35 +1559,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
             </div>
           </div>
 
-          <BufferBar bufferSeconds={simBuf} zone={zone} />
+          <BufferBar bufferSeconds={realBuf} zone={zone} />
 
-          {/* Network Simulator Controls */}
-          <div style={{ marginTop: 14, padding: 14, background: '#1a1a1a', borderRadius: 8 }}>
-            <div style={{ fontSize: 11, color: '#555', letterSpacing: 1, marginBottom: 10 }}>
-              NETWORK SIMULATOR
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {Object.entries(NET_PRESETS).map(([key, p]) => (
-                <button
-                  key={key}
-                  onClick={() => setNetMode(key)}
-                  style={{
-                    padding: '6px 14px', borderRadius: 4, fontSize: 12, cursor: 'pointer',
-                    border: netMode === key ? `2px solid ${p.color}` : '2px solid #333',
-                    background: netMode === key ? `${p.color}22` : '#111',
-                    color: netMode === key ? p.color : '#666',
-                    fontWeight: netMode === key ? 700 : 400,
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <div style={{ marginTop: 8, fontSize: 11, color: '#555' }}>
-              Simulated throughput: <span style={{ color: preset.color, fontWeight: 600 }}>{preset.cap} kbps</span>
-              {' '} — switch to see BBA adapt quality in real-time
-            </div>
-          </div>
 
           <div style={{ marginTop: 12, padding: 12, background: '#0e1b2d', border: '1px solid #2f76d2', borderRadius: 6 }}>
             <div style={{ fontSize: 12, color: '#9ec6ff', marginBottom: 8, fontWeight: 700 }}>
@@ -1678,11 +1623,10 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           </Panel>
 
           <Panel title="BBA Engine">
-            <Row label="Buffer" value={<span style={{ color: zoneColor[zone] }}>{simBuf.toFixed(1)}s</span>} />
+            <Row label="Buffer" value={<span style={{ color: zoneColor[zone] }}>{realBuf.toFixed(1)}s</span>} />
             <Row label="Zone" value={<span style={{ color: zoneColor[zone] }}>{zone}</span>} />
             <Row label="Quality" value={<span style={{ color: '#46d369' }}>{quality}</span>} />
             <Row label="Priority" value={priority} />
-            <Row label="Network" value={<span style={{ color: preset.color }}>{preset.cap} kbps</span>} />
             <Row label="Audio" value={audioOptions.find(track => track.index === selectedAudioIndex)?.label || 'Default'} />
             <Row label="Subtitle" value={selectedSubtitleUrl === 'off' ? 'Off' : (subtitleTracks.find(track => track.source_url === selectedSubtitleUrl)?.label || 'Selected')} />
             {recQuality && recQuality !== quality && (
