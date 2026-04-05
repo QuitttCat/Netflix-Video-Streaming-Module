@@ -27,6 +27,7 @@ CACHE_PATH    = os.getenv("CACHE_PATH",    "/cache")
 _cache_hits   = 0
 _cache_misses = 0
 _active_reqs  = 0
+_smoothed_load = 0.0
 
 
 async def _register():
@@ -56,15 +57,18 @@ async def _register():
 
 async def _heartbeat_loop():
     """Send periodic health metrics to origin every 5 seconds."""
-    global _cache_hits, _cache_misses, _active_reqs
+        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     async with httpx.AsyncClient() as client:
         while True:
             try:
                 await client.put(
                     f"{ORIGIN_URL}/api/cdn/heartbeat/{NODE_ID}",
+                    # Smooth load: decay toward current value so spikes stay visible
+                    instant_load = min(100.0, _active_reqs * 8.0)
+                    _smoothed_load = _smoothed_load * 0.6 + instant_load * 0.4
                     json={
                         "latency_ms":       random.randint(5, 40),
-                        "load_percent":     min(100.0, _active_reqs * 8.0),
+                        "load_percent":     round(_smoothed_load, 1),
                         "cache_hit_count":  _cache_hits,
                         "cache_miss_count": _cache_misses,
                     },
@@ -132,7 +136,7 @@ async def health():
 
 @app.get("/videos/{video_id}/manifest.mpd")
 async def serve_manifest(video_id: int):
-    global _cache_hits, _cache_misses, _active_reqs
+        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     _active_reqs += 1
     try:
         cache_path = _manifest_cache(video_id)
@@ -159,7 +163,7 @@ async def serve_manifest(video_id: int):
 
 @app.get("/videos/{video_id}/segments/{quality}/{segment_number}")
 async def serve_segment(video_id: int, quality: str, segment_number: int):
-    global _cache_hits, _cache_misses, _active_reqs
+        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     _active_reqs += 1
     try:
         cache_path = _segment_cache(video_id, quality, segment_number)
@@ -188,7 +192,7 @@ async def serve_segment(video_id: int, quality: str, segment_number: int):
 @app.get("/videos/{video_id}/{filename:path}")
 async def serve_dash_file(video_id: int, filename: str):
     """Serve any DASH file (init-stream*.m4s, chunk-stream*.m4s) with CDN caching."""
-    global _cache_hits, _cache_misses, _active_reqs
+        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
     if normalized.startswith("../") or normalized == "..":
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -219,7 +223,7 @@ async def serve_dash_file(video_id: int, filename: str):
 
 @app.get("/trailers/{series_id}/{filename:path}")
 async def serve_trailer(series_id: int, filename: str):
-    global _cache_hits, _cache_misses, _active_reqs
+        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     normalized = os.path.normpath(filename).replace("\\", "/").lstrip("/")
     if normalized.startswith("../") or normalized == "..":
         raise HTTPException(status_code=400, detail="Invalid filename")
