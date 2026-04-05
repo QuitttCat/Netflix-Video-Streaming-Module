@@ -41,7 +41,6 @@ const NET_PRESETS = {
   good: { label: 'Good (3 Mbps)', cap: 3000, color: '#46d369' },
   medium: { label: 'Medium (800 kbps)', cap: 800, color: '#f5a623' },
   poor: { label: 'Poor (200 kbps)', cap: 200, color: '#e50914' },
-  offline: { label: 'Offline (0)', cap: 0, color: '#ff0000' },
 }
 
 const LANGUAGE_LABELS = {
