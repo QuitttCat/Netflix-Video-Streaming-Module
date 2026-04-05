@@ -57,7 +57,7 @@ async def _register():
 
 async def _heartbeat_loop():
     """Send periodic health metrics to origin every 5 seconds."""
-        global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
+    global _cache_hits, _cache_misses, _active_reqs, _smoothed_load
     async with httpx.AsyncClient() as client:
         while True:
             try:
