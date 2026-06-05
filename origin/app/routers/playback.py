@@ -16,6 +16,7 @@ from ..models import Video, CDNNode, Episode, Season, Series, Session, User, Vid
 
 router = APIRouter()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 
 
 class PlaybackProgressRequest(BaseModel):
@@ -24,12 +25,25 @@ class PlaybackProgressRequest(BaseModel):
     playhead_position: float
 
 
+class QualityOverrideRequest(BaseModel):
+    session_id: str
+    quality: str
+    manual_override: bool = True
+
+
 def _score_node(node: CDNNode, client_region: str) -> float:
     region_bonus = 0 if (node.location or "").lower() == (client_region or "").lower() else 100
     return region_bonus + float(node.load_percent or 0.0) + float(node.latency_ms or 0) / 10.0
 
 
-def _to_client_url(raw_url: str) -> str:
+def _to_client_url(raw_url: str, node_id: str = "") -> str:
+    # If PUBLIC_URL is set (HTTPS deployment), route through nginx CDN proxy
+    # to avoid mixed content (HTTPS page loading HTTP CDN segments)
+    if PUBLIC_URL and node_id:
+        node_num = node_id.replace("cdn-node-", "")
+        if node_num.isdigit():
+            return f"{PUBLIC_URL}/cdn{node_num}"
+
     parsed = urlparse(raw_url or "")
     if not parsed.scheme:
         return raw_url
@@ -192,21 +206,23 @@ async def start_playback(
     if nodes:
         best_node = min(nodes, key=lambda n: _score_node(n, clientRegion))
         internal_cdn_url = best_node.url
-        client_cdn_url = _to_client_url(internal_cdn_url)
+        client_cdn_url = _to_client_url(internal_cdn_url, node_id=best_node.id)
         cdn_info = {
             "id": best_node.id,
             "name": best_node.name,
             "url": client_cdn_url,
             "internal_url": internal_cdn_url,
+            "location": best_node.location,
         }
     else:
         internal_cdn_url = "http://origin:8000"
-        client_cdn_url = "http://localhost:8000"
+        client_cdn_url = PUBLIC_URL if PUBLIC_URL else "http://localhost:8000"
         cdn_info = {
             "id": "origin",
             "name": "origin-server",
             "url": client_cdn_url,
             "internal_url": internal_cdn_url,
+            "location": None,
         }
 
     session_id = str(uuid.uuid4())[:8]
@@ -332,4 +348,31 @@ async def get_manifest_meta(video_id: int, db: AsyncSession = Depends(get_db)):
         "duration":       video.duration_seconds,
         "total_segments": video.total_segments,
         "qualities":      video.available_qualities,
+    }
+
+
+@router.patch("/quality")
+async def update_quality(
+    payload: QualityOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Session).where(Session.id == payload.session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != user.username:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    await db.execute(
+        update(Session)
+        .where(Session.id == payload.session_id)
+        .values(quality=payload.quality)
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "session_id": payload.session_id,
+        "quality": payload.quality,
+        "manual_override": payload.manual_override,
     }

@@ -18,6 +18,11 @@ function pathForView(nextView, selectedVideoId) {
   return '/home'
 }
 
+function videoIdFromWatchPath(pathname) {
+  const match = pathname.match(/^\/watch\/(\d+)(?:\/)?$/)
+  return match ? Number(match[1]) : null
+}
+
 export default function App() {
   const [auth,     setAuth]     = useState(null)     // null | { token, user }
   const [view,     setView]     = useState('home')   // 'home' | 'player' | 'admin' | 'content'
@@ -33,6 +38,70 @@ export default function App() {
     } else {
       window.history.pushState({ view: nextView, videoId }, '', nextPath)
     }
+  }
+
+  const applyPlaybackState = (data, fallbackVideo = {}) => {
+    const currentEpisode = data.video_metadata?.current_episode
+    const resolvedVideoId = data.video_metadata?.id || fallbackVideo.id || null
+
+    setSession(data)
+    setSelVideo({
+      ...fallbackVideo,
+      id: resolvedVideoId,
+      title: currentEpisode?.title || data.video_metadata?.title || fallbackVideo.title,
+      description: currentEpisode?.synopsis || data.video_metadata?.description || fallbackVideo.description,
+      subtitle: currentEpisode?.episode_number
+        ? `Season ${currentEpisode.season_number} • Episode ${currentEpisode.episode_number}`
+        : fallbackVideo.subtitle,
+      episode_id: currentEpisode?.episode_id || data.video_metadata?.episode_id || fallbackVideo.episode_id,
+      tracks: data.video_metadata?.tracks || fallbackVideo.tracks || [],
+    })
+
+    if (resolvedVideoId) {
+      localStorage.setItem('last_playback_video_id', String(resolvedVideoId))
+    }
+  }
+
+  // Parse backend heartbeat timestamps (naive UTC, no 'Z' suffix) correctly
+  const parseHb = (ts) => ts ? new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z') : null
+
+  const requestPlaybackSession = async (videoId, token) => {
+    // Always derive preferred region from current timezone (devtools changes always respected)
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    const tzRegion = tz.includes('Calcutta') || tz.includes('Kolkata') || tz.includes('Dhaka') ? 'bangalore'
+      : tz.includes('Frankfurt') || tz.includes('Berlin') || tz.includes('Europe') ? 'frankfurt'
+      : tz.includes('America') ? 'san-francisco'
+      : 'bangalore'
+
+    // Pre-flight: check if preferred region's node is actually healthy before committing
+    let clientRegion = tzRegion
+    try {
+      const statsRes = await fetch('/api/cdn/stats')
+      if (statsRes.ok) {
+        const stats = await statsRes.json()
+        const nodes = Array.isArray(stats.nodes) ? stats.nodes : []
+        const preferredNode = nodes.find(n => (n.location || '').toLowerCase() === tzRegion)
+        const prefHb = preferredNode ? parseHb(preferredNode.last_heartbeat) : null
+        const prefHealthy = prefHb && (Date.now() - prefHb.getTime()) < 20000
+
+        if (!prefHealthy) {
+          // Preferred region is down — pick the best healthy node instead
+          const healthy = nodes
+            .filter(n => { const hb = parseHb(n.last_heartbeat); return hb && (Date.now() - hb.getTime()) < 20000 })
+            .sort((a, b) => (a.latency_ms || 999) - (b.latency_ms || 999))
+          if (healthy.length > 0) clientRegion = healthy[0].location || tzRegion
+        }
+      }
+    } catch {
+      // Health check failed — proceed with timezone region, backend will handle it
+    }
+
+    const r = await fetch(`/api/playback/start?videoId=${videoId}&clientRegion=${clientRegion}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await r.json()
+    if (!r.ok) throw new Error(data.detail || 'Could not start playback')
+    return data
   }
 
   // Restore session from localStorage on first load and verify token
@@ -63,14 +132,37 @@ export default function App() {
 
         const nextAuth = { token: parsed.token, user: me }
         const isAdmin = me.role === 'admin'
-        const startView = resolveViewFromPath(window.location.pathname, isAdmin)
+        const currentPathname = window.location.pathname
+        const startView = resolveViewFromPath(currentPathname, isAdmin)
+        const routeVideoId = videoIdFromWatchPath(currentPathname)
+        const persistedVideoId = Number(localStorage.getItem('last_playback_video_id') || 0) || null
+        const resumeVideoId = startView === 'player' ? (routeVideoId || persistedVideoId) : null
+
         localStorage.setItem('auth', JSON.stringify(nextAuth))
         setAuth(nextAuth)
-        setView(startView)
-        window.history.replaceState({ view: startView }, '', pathForView(startView))
+
+        if (startView === 'player' && resumeVideoId) {
+          const playbackData = await requestPlaybackSession(resumeVideoId, nextAuth.token)
+          if (!alive) return
+
+          applyPlaybackState(playbackData, { id: resumeVideoId })
+          setView('player')
+          window.history.replaceState({ view: 'player', videoId: resumeVideoId }, '', pathForView('player', resumeVideoId))
+        } else {
+          if (startView === 'player') {
+            setSession(null)
+            setSelVideo(null)
+            setView('home')
+            window.history.replaceState({ view: 'home' }, '', pathForView('home'))
+          } else {
+            setView(startView)
+            window.history.replaceState({ view: startView }, '', pathForView(startView))
+          }
+        }
       } catch {
         if (!alive) return
         localStorage.removeItem('auth')
+        localStorage.removeItem('last_playback_video_id')
         setAuth(null)
         setView('home')
         window.history.replaceState({ view: 'login' }, '', '/login')
@@ -109,6 +201,7 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('auth')
+    localStorage.removeItem('last_playback_video_id')
     setAuth(null)
     setView('home')
     setSession(null)
@@ -118,23 +211,8 @@ export default function App() {
 
   const handlePlayVideo = async (video) => {
     try {
-      const r = await fetch(`/api/playback/start?videoId=${video.id}&clientRegion=dhaka`, {
-        headers: { Authorization: `Bearer ${auth.token}` },
-      })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.detail || 'Could not start playback')
-      const currentEpisode = data.video_metadata?.current_episode
-      setSession(data)
-      setSelVideo({
-        ...video,
-        title: currentEpisode?.title || data.video_metadata?.title || video.title,
-        description: currentEpisode?.synopsis || data.video_metadata?.description || video.description,
-        subtitle: currentEpisode?.episode_number
-          ? `Season ${currentEpisode.season_number} • Episode ${currentEpisode.episode_number}`
-          : video.subtitle,
-        episode_id: currentEpisode?.episode_id || data.video_metadata?.episode_id || video.episode_id,
-        tracks: data.video_metadata?.tracks || video.tracks || [],
-      })
+      const data = await requestPlaybackSession(video.id, auth.token)
+      applyPlaybackState(data, video)
       navigate('player', { videoId: video.id })
     } catch (e) {
       alert('Could not start playback: ' + e.message)
@@ -178,6 +256,10 @@ export default function App() {
     } catch (e) {
       alert(e.message)
     }
+  }
+
+  const handleManifestSwitch = (newManifestUrl) => {
+    setSession(prev => prev ? { ...prev, manifest_url: newManifestUrl } : prev)
   }
 
   const handlePlaySeries = async (seriesId) => {
@@ -273,6 +355,7 @@ export default function App() {
           user={auth.user}
           token={auth.token}
           onPlayNextEpisode={handlePlayNextEpisode}
+          onManifestSwitch={handleManifestSwitch}
         />
       )}
 

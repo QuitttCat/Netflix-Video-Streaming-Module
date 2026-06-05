@@ -36,35 +36,64 @@ function bba(buf) {
   return { quality: QUALITIES[Math.min(Math.floor(r * QUALITIES.length), QUALITIES.length - 1)], zone: 'cushion' }
 }
 
-// Network condition presets for demo (simulated throughput caps in kbps)
-const NET_PRESETS = {
-  good: { label: 'Good (3 Mbps)', cap: 3000, color: '#46d369' },
-  medium: { label: 'Medium (800 kbps)', cap: 800, color: '#f5a623' },
-  poor: { label: 'Poor (200 kbps)', cap: 200, color: '#e50914' },
-  offline: { label: 'Offline (0)', cap: 0, color: '#ff0000' },
-}
 
 const LANGUAGE_LABELS = {
-  chi: 'Chinese',
+  chi: 'Chinese (Simplified)',
+  zho: 'Chinese (Simplified)',
+  zh: 'Chinese (Simplified)',
   eng: 'English',
+  en: 'English',
   fre: 'French',
+  fra: 'French',
   hin: 'Hindi',
+  hi: 'Hindi',
   ind: 'Indonesian',
+  id: 'Indonesian',
   jpn: 'Japanese',
+  ja: 'Japanese',
   kor: 'Korean',
-  por: 'Portuguese',
+  ko: 'Korean',
+  por: 'Portuguese (Brazil)',
+  pt: 'Portuguese',
+  'pt-br': 'Portuguese (Brazil)',
   rus: 'Russian',
+  ru: 'Russian',
   spa: 'Spanish',
+  es: 'Spanish',
   tha: 'Thai',
+  th: 'Thai',
 }
 
 function normalizeLanguage(value) {
-  return String(value || '').trim().toLowerCase()
+  return String(value || '').trim().toLowerCase().replace(/_/g, '-')
+}
+
+function cleanTrackLabel(value) {
+  const label = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!label) return ''
+
+  const withoutCorruptedParens = label
+    .replace(/\s*\(([^)]*)\)/g, (full, inner) => {
+      const hasCorruptedText = /[^\x20-\x7E]/.test(inner)
+      return hasCorruptedText ? '' : full
+    })
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+
+  if (!withoutCorruptedParens) return ''
+
+  return withoutCorruptedParens
 }
 
 function trackLabel(track) {
   const language = normalizeLanguage(track?.language || track?.lang)
-  return track?.label || LANGUAGE_LABELS[language] || (language ? language.toUpperCase() : 'Unknown')
+  const languageBase = language.split('-')[0]
+  return (
+    LANGUAGE_LABELS[language] ||
+    LANGUAGE_LABELS[languageBase] ||
+    cleanTrackLabel(track?.label) ||
+    (language ? language.toUpperCase() : 'Unknown')
+  )
 }
 
 function pickDefaultSubtitleTrack(tracks) {
@@ -72,10 +101,11 @@ function pickDefaultSubtitleTrack(tracks) {
   return defaults.find(track => normalizeLanguage(track.language) === 'eng') || defaults[0] || null
 }
 
-export default function VideoPlayer({ session, video, user, token, onPlayNextEpisode }) {
+export default function VideoPlayer({ session, video, user, token, onPlayNextEpisode, onManifestSwitch }) {
   const videoRef = useRef(null)
   const playerRef = useRef(null)
   const resumeAppliedRef = useRef(false)
+  const cdnSwitchResumeRef = useRef(null)  // resume time to use when CDN switch triggers reiniit
   const lastProgressSavedAtRef = useRef(0)
   const [playing, setPlaying] = useState(false)
   const [muted, setMuted] = useState(false)
@@ -93,8 +123,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const [prefetchPolling, setPrefetchPolling] = useState(false)
   const [recQuality, setRecQuality] = useState(null)
   const [dashReady, setDashReady] = useState(false)
-  const [netMode, setNetMode] = useState('good')
-  const [simBuf, setSimBuf] = useState(0)  // simulated buffer for BBA demo
+  const [realBuf, setRealBuf] = useState(0)  // actual dash.js buffer level
   const [autoNextCountdown, setAutoNextCountdown] = useState(null)
   const [audioOptions, setAudioOptions] = useState([])
   const [selectedAudioIndex, setSelectedAudioIndex] = useState('')
@@ -116,6 +145,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   const [resolutionPreset, setResolutionPreset] = useState('auto')
   const [showAudioSubMenu, setShowAudioSubMenu] = useState(false)
   const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+  const [activeCdn, setActiveCdn] = useState(null) // current CDN node info
+  const [cdnSwitchMsg, setCdnSwitchMsg] = useState(null)
   const popoverTimerRef = useRef(null)
 
   const currentVideoId =
@@ -141,7 +172,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
   const duration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0, 1)
   const knownDuration = Math.max(session?.video_metadata?.duration || 0, durationReal || 0)
-  const preset = NET_PRESETS[netMode]
   const watchedPercent = Math.max(0, Math.min(100, Math.round((playhead / duration) * 100)))
   const prefetchTriggerProgress = Math.max(0, Math.min(100, Math.round((playhead / duration) / 0.9 * 100)))
   const prefetchUiStatus = prefetchStatus || {
@@ -176,7 +206,9 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     const manifestUrl = session.manifest_url
 
     const player = dashjs.MediaPlayer().create()
-    player.initialize(videoRef.current, manifestUrl, true)
+    const startTime = cdnSwitchResumeRef.current ?? undefined
+    cdnSwitchResumeRef.current = null
+    player.initialize(videoRef.current, manifestUrl, true, startTime)
     player.updateSettings({
       streaming: {
         buffer: {
@@ -194,30 +226,34 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     // We use a ref for the metadata so this closure never goes stale without being in deps.
     const handleStreamInitialized = () => {
       const dashTracks = player.getTracksFor?.('audio') || []
-      if (!dashTracks.length) return
 
-      const options = dashTracks.map((t, i) => {
-        const lang = normalizeLanguage(t.lang || t.language)
-        const meta = metadataAudioTracksRef.current.find(m => normalizeLanguage(m.language) === lang)
-        return {
-          index: String(i),
-          label: meta?.label || LANGUAGE_LABELS[lang] || (lang ? lang.toUpperCase() : `Track ${i + 1}`),
-          language: lang,
-          is_default: Boolean(meta?.is_default),
-        }
-      })
-      setAudioOptions(options)
+      if (dashTracks.length) {
+        const options = dashTracks.map((t, i) => {
+          const lang = normalizeLanguage(t.lang || t.language)
+          const meta = metadataAudioTracksRef.current.find(m => normalizeLanguage(m.language) === lang)
+          return {
+            index: String(i),
+            label: meta?.label || LANGUAGE_LABELS[lang] || (lang ? lang.toUpperCase() : `Track ${i + 1}`),
+            language: lang,
+            is_default: Boolean(meta?.is_default),
+          }
+        })
+        setAudioOptions(options)
 
-      // Apply the default track once — never on subsequent TRACK_CHANGE_RENDERED callbacks
-      if (!audioInitDoneRef.current) {
-        audioInitDoneRef.current = true
-        const defaultOpt = options.find(o => o.is_default) || options[0]
-        if (defaultOpt) {
-          setSelectedAudioIndex(defaultOpt.index)
-          const defaultTrack = dashTracks[Number(defaultOpt.index)]
-          if (defaultTrack) player.setCurrentTrack(defaultTrack)
+        // Apply the default track once — never on subsequent TRACK_CHANGE_RENDERED callbacks
+        if (!audioInitDoneRef.current) {
+          audioInitDoneRef.current = true
+          const defaultOpt = options.find(o => o.is_default) || options[0]
+          if (defaultOpt) {
+            setSelectedAudioIndex(defaultOpt.index)
+            const defaultTrack = dashTracks[Number(defaultOpt.index)]
+            if (defaultTrack) player.setCurrentTrack(defaultTrack)
+          }
         }
       }
+
+      // Trigger autoplay only after dash.js has the stream ready — not before
+      tryAutoplay()
     }
 
     // Only mirror what dash.js has selected into the UI — never calls setCurrentTrack (no oscillation)
@@ -243,13 +279,15 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         await element.play()
         setPlaying(true)
         setAutoplayBlocked(false)
-        if (simBuf === 0) setSimBuf(2)
       } catch {
         setAutoplayBlocked(true)
       }
     }
 
-    tryAutoplay()
+    // Clear autoplayBlocked whenever the video actually starts playing
+    // (covers dash.js internal autoplay, manual tap, and CDN failover resume)
+    element.addEventListener('play', () => { setPlaying(true); setAutoplayBlocked(false) })
+
     playerRef.current = player
     setDashReady(true)
 
@@ -263,6 +301,72 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   useEffect(() => {
     resumeAppliedRef.current = false
   }, [session?.session_id])
+
+  // Initialize active CDN from session
+  useEffect(() => {
+    if (session?.cdn_node) setActiveCdn(session.cdn_node)
+  }, [session?.session_id])
+
+  // CDN health check — every 15s, check if current node is still alive
+  // Only switch when current node is DEAD, not just because another is "better"
+  const activeCdnRef = useRef(null)
+  useEffect(() => { activeCdnRef.current = activeCdn }, [activeCdn])
+
+  useEffect(() => {
+    if (!playing || !session?.session_id || !currentVideoId) return
+    const check = async () => {
+      try {
+        const r = await fetch(`/api/cdn/stats`)
+        if (!r.ok) return
+        const stats = await r.json()
+        const nodes = Array.isArray(stats?.nodes) ? stats.nodes : []
+        const current = activeCdnRef.current
+        if (!current) return
+
+        const currentId = current.id || current.node_id
+        const currentNode = nodes.find(n => n.id === currentId)
+
+        // Parse heartbeat timestamp as UTC (backend returns naive UTC without 'Z')
+        const parseHb = (ts) => ts ? new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z') : null
+
+        // Current node is still alive and healthy — do nothing
+        if (currentNode && currentNode.status === 'active') {
+          const lastHb = parseHb(currentNode.last_heartbeat)
+          const age = lastHb ? (Date.now() - lastHb.getTime()) : Infinity
+          if (age < 20000) return // node is healthy, no switch
+        }
+
+        // Current node is dead/stale — find a replacement
+        const alive = nodes.filter(n => {
+          if (n.id === currentId) return false
+          if (n.status !== 'active') return false
+          const hb = parseHb(n.last_heartbeat)
+          return hb && (Date.now() - hb.getTime()) < 20000
+        })
+        if (alive.length === 0) return // no healthy alternatives
+
+        // Pick the one with lowest latency
+        const best = alive.reduce((a, b) => (a.latency_ms || 999) <= (b.latency_ms || 999) ? a : b)
+
+        // Switch to the replacement node
+        const clientUrl = (best.url || '').replace(/\/$/, '')
+        const oldUrl = session.manifest_url || ''
+        const pathMatch = oldUrl.match(/\/videos\/.*/)
+        if (pathMatch && onManifestSwitch) {
+          const newManifest = `${clientUrl}${pathMatch[0]}`
+          // Save resume time — picked up by player init useEffect on re-render
+          cdnSwitchResumeRef.current = videoRef.current?.currentTime || 0
+          onManifestSwitch(newManifest)
+        }
+        const prevName = current.name || currentId
+        setCdnSwitchMsg(`CDN failover: ${prevName} → ${best.name}`)
+        setTimeout(() => setCdnSwitchMsg(null), 5000)
+        setActiveCdn({ id: best.id, name: best.name, url: best.url })
+      } catch {}
+    }
+    const t = setInterval(check, 15000)
+    return () => clearInterval(t)
+  }, [playing, session?.session_id, currentVideoId, session?.manifest_url])
 
   useEffect(() => {
     prefetchTriggered.current = false
@@ -454,27 +558,7 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
   }, [adjustVolumeBy, resetIdleTimer, playing])
 
   // Simulate buffer dynamics based on network preset
-  // Real dash.js buffer fills too fast on localhost, so we simulate
-  // a separate BBA buffer that drains/fills based on the selected network mode
-  useEffect(() => {
-    if (!playing) return
-    const t = setInterval(() => {
-      setSimBuf(prev => {
-        const capKbps = NET_PRESETS[netMode].cap
-        // Simulate: each tick (500ms), we "download" some data and "consume" some
-        // consumption = current quality bitrate worth of 0.5s
-        const qualityBitrates = { '360p': 400, '480p': 800, '720p': 1500, '1080p': 3000 }
-        const consumeRate = qualityBitrates[quality] || 800  // kbps being consumed
-        const downloadSeconds = capKbps > 0 ? (capKbps / consumeRate) * 0.5 : 0
-        const drainSeconds = 0.5  // we consume 0.5s of buffer per 0.5s tick
-        const delta = downloadSeconds - drainSeconds
-        return Math.max(0, Math.min(MAX_BUF, prev + delta))
-      })
-    }, 500)
-    return () => clearInterval(t)
-  }, [playing, netMode, quality])
-
-  // Poll real playhead from dash.js
+  // Poll real playhead and real buffer level from dash.js
   useEffect(() => {
     if (!dashReady) return
     const t = setInterval(() => {
@@ -484,6 +568,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         const time = player.time() || 0
         setPlayhead(time)
         setPlaying(!videoRef.current?.paused)
+        const buf = player.getBufferLength?.('video') ?? 0
+        setRealBuf(Math.min(buf, MAX_BUF))
       } catch (_) { }
     }, 500)
     return () => clearInterval(t)
@@ -491,11 +577,14 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
   // Derive zone & quality from simulated buffer using BBA
   useEffect(() => {
-    const { quality: q, zone: z } = bba(simBuf)
+    const { quality: q, zone: z } = bba(realBuf)
     setZone(z)
-    setQuality(q)
-    setPriority(simBuf < 5 ? 'audio' : 'video')
-  }, [simBuf])
+    // Only let BBA drive quality when in auto mode
+    if (resolutionPreset === 'auto') {
+      setQuality(q)
+    }
+    setPriority(realBuf < 5 ? 'audio' : 'video')
+  }, [realBuf, resolutionPreset])
 
   // Report buffer to backend every 3s
   const report = useCallback(async () => {
@@ -507,17 +596,17 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
         body: JSON.stringify({
           session_id: session.session_id,
           video_id: video.id,
-          current_buffer_seconds: simBuf,
+          current_buffer_seconds: realBuf,
           current_quality: quality,
           playhead_position: playhead,
           segments_buffered: Array.from({ length: 5 }, (_, i) => Math.floor(playhead / 4) + i),
-          download_speed_kbps: preset.cap,
+          download_speed_kbps: null,
         }),
       })
       const rec = await r.json()
       setRecQuality(rec.recommended_quality)
     } catch (_) { }
-  }, [simBuf, quality, playhead, session, video, preset])
+  }, [realBuf, quality, playhead, session, video])
 
   const savePlaybackProgress = useCallback(async (force = false) => {
     if (!session?.session_id || !video?.id || !user?.username || !token) return
@@ -627,7 +716,6 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     if (videoRef.current.paused) {
       videoRef.current.play().then(() => {
         setAutoplayBlocked(false)
-        if (simBuf === 0) setSimBuf(2)
         if (show) showAction('Play', '▶')
       }).catch(() => setAutoplayBlocked(true))
     } else {
@@ -765,6 +853,22 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
     setShowEpisodePicker(false)
   }
 
+  const notifyQualityChange = (newQuality, manualOverride) => {
+    if (!session?.session_id || !token) return
+    fetch('/api/playback/quality', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        session_id: session.session_id,
+        quality: newQuality,
+        manual_override: manualOverride,
+      }),
+    }).catch(() => {})
+  }
+
   const applyResolutionPreset = (presetKey) => {
     setResolutionPreset(presetKey)
     const player = playerRef.current
@@ -775,6 +879,10 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
 
     if (presetKey === 'auto') {
       player.updateSettings?.({ streaming: { abr: { autoSwitchBitrate: { video: true, audio: true } } } })
+      // Let BBA drive quality again
+      const { quality: q } = bba(realBuf)
+      setQuality(q)
+      notifyQualityChange(q, false)
       showAction('Auto Quality', 'HD')
       return
     }
@@ -796,6 +904,11 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
       }
     })
     player.setQualityFor('video', bestIndex, true)
+
+    // Map preset key to quality label and update state + backend
+    const qualityLabel = presetKey === 'hd' ? '1080p' : presetKey
+    setQuality(qualityLabel)
+    notifyQualityChange(qualityLabel, true)
     showAction(selected?.label || 'Quality Changed', 'HD')
   }
 
@@ -974,9 +1087,24 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
             }}>
               <div
                 onClick={seekToPercent}
-                style={{ height: 6, background: '#505050', borderRadius: 99, cursor: 'pointer', marginBottom: 10 }}
+                style={{ position: 'relative', height: 6, background: '#505050', borderRadius: 99, cursor: 'pointer', marginBottom: 10 }}
               >
-                <div style={{ height: '100%', width: `${(playhead / duration) * 100}%`, borderRadius: 99, background: '#e50914' }} />
+                {/* Buffer loaded bar (grey, behind playhead) */}
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, height: '100%', borderRadius: 99, background: 'rgba(255,255,255,0.3)',
+                  width: `${(() => {
+                    const el = videoRef.current
+                    if (!el?.buffered?.length || !duration) return 0
+                    let end = 0
+                    for (let i = 0; i < el.buffered.length; i++) {
+                      if (el.buffered.start(i) <= playhead) end = Math.max(end, el.buffered.end(i))
+                    }
+                    return Math.min(100, (end / duration) * 100)
+                  })()}%`,
+                  transition: 'width 0.3s ease',
+                }} />
+                {/* Playhead bar (red) */}
+                <div style={{ position: 'relative', height: '100%', width: `${(playhead / duration) * 100}%`, borderRadius: 99, background: '#e50914' }} />
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#fff', position: 'relative' }}>
@@ -1167,6 +1295,16 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
               }}>
                 <div style={{ fontSize: 20, marginBottom: 2 }}>{actionOverlay.icon || '•'}</div>
                 <div style={{ fontSize: 14 }}>{actionOverlay.label}</div>
+              </div>
+            )}
+
+            {cdnSwitchMsg && (
+              <div style={{
+                position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', zIndex: 10,
+                background: 'rgba(16,16,16,0.92)', border: '1px solid #46d369', borderRadius: 8,
+                padding: '8px 18px', fontSize: 12, color: '#46d369', whiteSpace: 'nowrap',
+              }}>
+                {cdnSwitchMsg}
               </div>
             )}
 
@@ -1421,35 +1559,8 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
             </div>
           </div>
 
-          <BufferBar bufferSeconds={simBuf} zone={zone} />
+          <BufferBar bufferSeconds={realBuf} zone={zone} />
 
-          {/* Network Simulator Controls */}
-          <div style={{ marginTop: 14, padding: 14, background: '#1a1a1a', borderRadius: 8 }}>
-            <div style={{ fontSize: 11, color: '#555', letterSpacing: 1, marginBottom: 10 }}>
-              NETWORK SIMULATOR
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {Object.entries(NET_PRESETS).map(([key, p]) => (
-                <button
-                  key={key}
-                  onClick={() => setNetMode(key)}
-                  style={{
-                    padding: '6px 14px', borderRadius: 4, fontSize: 12, cursor: 'pointer',
-                    border: netMode === key ? `2px solid ${p.color}` : '2px solid #333',
-                    background: netMode === key ? `${p.color}22` : '#111',
-                    color: netMode === key ? p.color : '#666',
-                    fontWeight: netMode === key ? 700 : 400,
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <div style={{ marginTop: 8, fontSize: 11, color: '#555' }}>
-              Simulated throughput: <span style={{ color: preset.color, fontWeight: 600 }}>{preset.cap} kbps</span>
-              {' '} — switch to see BBA adapt quality in real-time
-            </div>
-          </div>
 
           <div style={{ marginTop: 12, padding: 12, background: '#0e1b2d', border: '1px solid #2f76d2', borderRadius: 6 }}>
             <div style={{ fontSize: 12, color: '#9ec6ff', marginBottom: 8, fontWeight: 700 }}>
@@ -1496,10 +1607,15 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           </Panel>
 
           <Panel title="CDN Node">
-            {session.cdn_node ? (
+            {activeCdn ? (
               <>
-                <Row label="Name" value={session.cdn_node.name} />
-                <Row label="Node ID" value={session.cdn_node.id} />
+                <Row label="Name" value={activeCdn.name} />
+                <Row label="Node ID" value={activeCdn.id || activeCdn.node_id} />
+                {cdnSwitchMsg && (
+                  <div style={{ fontSize: 10, color: '#46d369', marginTop: 4, animation: 'fadeIn 0.3s' }}>
+                    {cdnSwitchMsg}
+                  </div>
+                )}
               </>
             ) : (
               <div style={{ color: '#555', fontSize: 12 }}>Served from origin</div>
@@ -1507,11 +1623,10 @@ export default function VideoPlayer({ session, video, user, token, onPlayNextEpi
           </Panel>
 
           <Panel title="BBA Engine">
-            <Row label="Buffer" value={<span style={{ color: zoneColor[zone] }}>{simBuf.toFixed(1)}s</span>} />
+            <Row label="Buffer" value={<span style={{ color: zoneColor[zone] }}>{realBuf.toFixed(1)}s</span>} />
             <Row label="Zone" value={<span style={{ color: zoneColor[zone] }}>{zone}</span>} />
             <Row label="Quality" value={<span style={{ color: '#46d369' }}>{quality}</span>} />
             <Row label="Priority" value={priority} />
-            <Row label="Network" value={<span style={{ color: preset.color }}>{preset.cap} kbps</span>} />
             <Row label="Audio" value={audioOptions.find(track => track.index === selectedAudioIndex)?.label || 'Default'} />
             <Row label="Subtitle" value={selectedSubtitleUrl === 'off' ? 'Off' : (subtitleTracks.find(track => track.source_url === selectedSubtitleUrl)?.label || 'Selected')} />
             {recQuality && recQuality !== quality && (
@@ -1645,18 +1760,6 @@ function chipStyle(active) {
   }
 }
 
-function listBtnStyle(active) {
-  return {
-    textAlign: 'left',
-    background: active ? 'rgba(229,9,20,0.2)' : 'rgba(255,255,255,0.04)',
-    color: '#fff',
-    border: active ? '1px solid rgba(229,9,20,0.7)' : '1px solid rgba(255,255,255,0.2)',
-    borderRadius: 6,
-    padding: '8px 10px',
-    fontSize: 12,
-    cursor: 'pointer',
-  }
-}
 
 function audioSubListBtnStyle(active) {
   return {
